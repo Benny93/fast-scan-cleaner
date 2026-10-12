@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux-blue)](#)
 
-**▶ [Watch the demo](https://github.com/user-attachments/assets/b6c77ce3-8dd0-4354-8598-4af6f2667343)**
+https://github.com/user-attachments/assets/b6c77ce3-8dd0-4354-8598-4af6f2667343
 
 See what fills your disk and clean it up safely. Inspired by GrandPerspective, built for people who don't want to be computer experts.
 
