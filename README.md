@@ -32,7 +32,24 @@ Installers are currently unsigned: macOS may show a Gatekeeper warning (right-cl
 ## Connecting an AI assistant
 
 1. In the app, open **Settings** and turn on **Allow AI assistants to control this app**, then restart.
-2. Click **Copy config for Claude** and paste it into your client's MCP configuration, or run:
+2. Add the server to your assistant:
+
+   **Qoder** — open Qoder IDE Settings (⌘⇧`,` / Ctrl+Shift+`,) → **MCP** → **My Servers** → **+ Add**, and paste:
+
+   ```json
+   {
+     "mcpServers": {
+       "fastscancleaner": {
+         "type": "sse",
+         "url": "http://127.0.0.1:7878/mcp"
+       }
+     }
+   }
+   ```
+
+   Qoder auto-detects the Streamable HTTP endpoint. Save and close the file; a link icon means the connection is up, and expanding the entry lists the tools.
+
+   **Claude** — click **Copy config for Claude** in Settings and paste it into your client's MCP configuration, or run:
 
    ```bash
    claude mcp add --transport http fastscancleaner http://127.0.0.1:7878/mcp
