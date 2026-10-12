@@ -538,7 +538,8 @@ mod tests {
     fn search_finds_nested_items_best_first_and_can_be_cancelled() {
         let tree = dir("/r", vec![dir("web", vec![dir("node_modules", vec![leaf("x", 5)]), leaf("app.js", 3)]), dir("mobile", vec![dir("node_modules", vec![leaf("y", 9)])])]);
         let hits = search(&tree, "Node_Modules", 10, &|| false).unwrap();
-        assert_eq!(hits.iter().map(|h| h.rel.display().to_string()).collect::<Vec<_>>(), ["mobile/node_modules", "web/node_modules"]); // equal score: bigger first
+        // Compare as paths: the display separator is `\` on Windows and `/` elsewhere.
+        assert_eq!(hits.iter().map(|h| h.rel.clone()).collect::<Vec<_>>(), [PathBuf::from("mobile/node_modules"), PathBuf::from("web/node_modules")]); // equal score: bigger first
         assert_eq!(search(&tree, "apjs", 10, &|| false).unwrap()[0].rel, PathBuf::from("web/app.js"));
         let big = dir("/r", (0..70_000).map(|i| leaf(&format!("f{i}"), 1)).collect());
         assert_eq!(search(&big, "f", 10, &|| true), None);
