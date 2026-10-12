@@ -1,4 +1,8 @@
+
 # FastScanCleaner
+
+https://github.com/user-attachments/assets/b6c77ce3-8dd0-4354-8598-4af6f2667343
+
 
 See what fills your disk and clean it up safely. Inspired by GrandPerspective, built for people who don't want to be computer experts.
 
