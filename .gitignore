@@ -1,0 +1,6 @@
+/target
+
+# Local media (demo video for uploading to the README), not part of the repo
+/media/
+.DS_Store
+

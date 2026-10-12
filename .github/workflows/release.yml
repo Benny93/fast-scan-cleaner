@@ -1,0 +1,39 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, formats: dmg } # Apple Silicon
+          - { os: macos-13, formats: dmg } # Intel
+          - { os: windows-latest, formats: nsis }
+          - { os: ubuntu-22.04, formats: "deb,appimage" } # older glibc = runs on more distros
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
+            libxrandr-dev libfontconfig-dev libpipewire-0.3-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev clang libfuse2
+      - run: cargo install cargo-packager --locked
+      - run: cargo packager --release --formats ${{ matrix.formats }}
+      # ponytail: unsigned; add Apple notarization / Windows code signing when users hit the warnings
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/dist/*.dmg
+            target/dist/*.exe
+            target/dist/*.deb
+            target/dist/*.AppImage

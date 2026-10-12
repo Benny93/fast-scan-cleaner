@@ -1,0 +1,50 @@
+[package]
+name = "fastscancleaner"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Find what fills your disk and clean it up safely, with AI assistant support over MCP"
+
+[dependencies]
+gpui-kit = "=0.6.6"
+rmcp = { version = "=3.5.1", features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+async-channel = "2"
+rayon = "1"
+trash = "5"
+rust-i18n = "4"
+sys-locale = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+dirs = "7"
+dunce = "1"
+globset = "0.4"
+sysinfo = "0.39"
+opener = { version = "0.9", features = ["reveal"] }
+xcap = "0.9"
+base64 = "0.22"
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSImage"] }
+objc2-foundation = { version = "0.2", features = ["NSData", "NSThread"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+# Release packaging (.app/.dmg, NSIS .exe, .deb/AppImage): `cargo packager --release`
+[package.metadata.packager]
+product-name = "FastScanCleaner"
+identifier = "dev.fastscancleaner.app"
+category = "Utility"
+before-packaging-command = "cargo build --release --locked"
+out-dir = "target/dist"
+icons = ["assets/AppIcon.icns", "assets/icon.ico", "assets/icon.png"]

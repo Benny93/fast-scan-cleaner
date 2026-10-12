@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
+            libxrandr-dev libfontconfig-dev libpipewire-0.3-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev clang
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastscancleaner-${{ matrix.os }}
+          path: |
+            target/release/fastscancleaner
+            target/release/fastscancleaner.exe
+          if-no-files-found: ignore

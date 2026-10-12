@@ -1,0 +1,172 @@
+# Guidance rules. First match wins: keep the most specific rules first.
+# glob: "~" = home folder; "*" stays inside one folder, "**" crosses folders.
+# os: optional, one of macos / linux / windows.
+# message: key in locales/*.yml
+
+[[rule]]
+id = "ios_backup"
+os = "macos"
+glob = "~/Library/Application Support/MobileSync/Backup/*"
+safety = "review"
+message = "rule_ios_backup"
+
+[[rule]]
+id = "xcode"
+os = "macos"
+glob = "~/Library/Developer/Xcode/DerivedData"
+safety = "safe"
+message = "rule_xcode"
+
+[[rule]]
+id = "photos"
+os = "macos"
+glob = "~/Pictures/*.photoslibrary"
+safety = "keep"
+message = "rule_photos"
+
+[[rule]]
+id = "docker"
+os = "macos"
+glob = "~/Library/Containers/com.docker.docker"
+safety = "review"
+message = "rule_docker"
+
+[[rule]]
+id = "xcode_archives"
+os = "macos"
+glob = "~/Library/Developer/Xcode/Archives"
+safety = "review"
+message = "rule_xcode_archives"
+
+[[rule]]
+id = "ios_device_support"
+os = "macos"
+glob = "~/Library/Developer/Xcode/iOS DeviceSupport/*"
+safety = "safe"
+message = "rule_device_support"
+
+[[rule]]
+id = "simulator_caches"
+os = "macos"
+glob = "~/Library/Developer/CoreSimulator/Caches"
+safety = "safe"
+message = "rule_sim_caches"
+
+[[rule]]
+id = "ios_updates"
+os = "macos"
+glob = "~/Library/iTunes/iPhone Software Updates/*"
+safety = "safe"
+message = "rule_ios_updates"
+
+[[rule]]
+id = "mail_downloads"
+os = "macos"
+glob = "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
+safety = "safe"
+message = "rule_mail_downloads"
+
+[[rule]]
+id = "homebrew_cache"
+os = "macos"
+glob = "~/Library/Caches/Homebrew"
+safety = "safe"
+message = "rule_homebrew"
+
+[[rule]]
+id = "logs"
+os = "macos"
+glob = "~/Library/Logs/*"
+safety = "safe"
+message = "rule_logs"
+
+[[rule]]
+id = "caches"
+os = "macos"
+glob = "~/Library/Caches/*"
+safety = "safe"
+message = "rule_caches"
+
+[[rule]]
+id = "linux_cache"
+os = "linux"
+glob = "~/.cache/*"
+safety = "safe"
+message = "rule_linux_cache"
+
+[[rule]]
+id = "flatpak_cache"
+os = "linux"
+glob = "~/.var/app/*/cache"
+safety = "safe"
+message = "rule_flatpak_cache"
+
+[[rule]]
+id = "win_temp"
+os = "windows"
+glob = "~/AppData/Local/Temp/*"
+safety = "safe"
+message = "rule_win_temp"
+
+[[rule]]
+id = "crash_dumps"
+os = "windows"
+glob = "~/AppData/Local/CrashDumps"
+safety = "safe"
+message = "rule_crash_dumps"
+
+[[rule]]
+id = "win_app_cache"
+os = "windows"
+glob = "~/AppData/Local/**/Cache"
+safety = "safe"
+message = "rule_caches"
+
+[[rule]]
+id = "snap_cache"
+os = "linux"
+glob = "~/snap/*/*/.cache"
+safety = "safe"
+message = "rule_linux_cache"
+
+[[rule]]
+id = "cargo_registry"
+glob = "~/.cargo/registry"
+safety = "safe"
+message = "rule_pkg_cache"
+
+[[rule]]
+id = "maven_repo"
+glob = "~/.m2/repository"
+safety = "safe"
+message = "rule_pkg_cache"
+
+[[rule]]
+id = "npm_cache"
+glob = "~/.npm/_cacache"
+safety = "safe"
+message = "rule_dev_cache"
+
+[[rule]]
+id = "gradle_cache"
+glob = "~/.gradle/caches"
+safety = "safe"
+message = "rule_dev_cache"
+
+[[rule]]
+id = "installer"
+glob = "~/Downloads/*.{dmg,pkg,exe,msi,deb,rpm,AppImage}"
+safety = "safe"
+message = "rule_installer"
+
+[[rule]]
+id = "downloads"
+glob = "~/Downloads"
+safety = "review"
+message = "rule_downloads"
+
+[[rule]]
+id = "node_modules"
+glob = "**/node_modules"
+safety = "safe"
+message = "rule_node_modules"
