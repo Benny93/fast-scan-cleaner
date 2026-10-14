@@ -257,7 +257,13 @@ mod tests {
 
     #[test]
     fn model_folders_are_listed_once() {
-        assert_eq!(dedup(vec![PathBuf::from("/a"), PathBuf::from("/b"), PathBuf::from("/a")]), vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        // Real folders: dedup canonicalises, and "/a" resolves to the current drive on Windows.
+        let t = tempfile::tempdir().unwrap();
+        let tmp = dunce::canonicalize(t.path()).unwrap();
+        let (a, b) = (tmp.join("a"), tmp.join("b"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        assert_eq!(dedup(vec![a.clone(), b.clone(), a.clone()]), vec![a.clone(), b]);
     }
 
     use super::*;
