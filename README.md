@@ -19,7 +19,19 @@ Grab an installer from the [latest release](https://github.com/Benny93/fast-scan
 | Windows | `.exe` (NSIS installer) |
 | Linux | `.deb` and `.AppImage` (built on old glibc, so they run on most distros) |
 
-Installers are currently unsigned: macOS may show a Gatekeeper warning (right-click → Open), and Windows SmartScreen an "unknown publisher" prompt.
+Installers are currently unsigned: Windows SmartScreen shows an "unknown publisher" prompt (click **More info → Run anyway**), and macOS Gatekeeper blocks the app on first launch — see below.
+
+### First launch on macOS
+
+The `.dmg` is unsigned and not notarized, so Gatekeeper refuses it. On macOS 15 (Sequoia) and later this is the hard-block wording — e.g. *„"FastScanCleaner" ist beschädigt und kann nicht geöffnet werden"* / "…is damaged and can't be opened". Right-click → Open does **not** bypass it. The app itself is fine; the prompt comes only from the download `quarantine` flag.
+
+After dragging **FastScanCleaner** into your Applications folder, clear the flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/FastScanCleaner.app"
+```
+
+Then launch it as usual. (Alternative: **System Settings → Privacy & Security**, and under *Security* click **Open Anyway** next to the "was blocked from opening" notice.) You only need to do this the first time.
 
 ## What you get
 

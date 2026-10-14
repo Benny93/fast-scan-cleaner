@@ -29,9 +29,22 @@ jobs:
             libxrandr-dev libfontconfig-dev libpipewire-0.3-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev clang libfuse2
       - run: cargo install cargo-packager --locked
       - run: cargo packager --release --formats ${{ matrix.formats }}
-      # ponytail: unsigned; add Apple notarization / Windows code signing when users hit the warnings
+      # Installers are intentionally unsigned (no Apple Developer / code-signing cert).
+      # macOS Gatekeeper blocks the app on first launch; the release body links the workaround.
       - uses: softprops/action-gh-release@v2
         with:
+          body: |
+            ## First launch
+
+            These installers are **unsigned and not notarized**.
+
+            - **macOS**: Gatekeeper will refuse the app (on macOS 15+ it says "…is damaged and can't be opened"; right-click → Open does not bypass it). After dragging the app into /Applications, run once:
+              ```
+              xattr -dr com.apple.quarantine "/Applications/FastScanCleaner.app"
+              ```
+            - **Windows**: SmartScreen shows "unknown publisher" — click **More info → Run anyway**.
+
+            See the README for details.
           files: |
             target/dist/*.dmg
             target/dist/*.exe
