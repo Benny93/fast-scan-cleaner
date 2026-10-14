@@ -1,6 +1,6 @@
 use super::cleanup::{estimate_text, system_name};
 use super::{AppView, loc};
-use crate::cleaners::Cleaner;
+use crate::finders::cleaners::Cleaner;
 use crate::actions::Origin;
 use crate::format;
 use crate::state::Pending;
@@ -25,6 +25,8 @@ impl AppView {
         let reason = p.reason.as_ref().map(|r| if r.chars().count() > 300 { format!("{}…", r.chars().take(300).collect::<String>()) } else { r.clone() });
         div()
             .id("confirm-overlay")
+            .track_focus(&self.focus_for("confirm-dialog", cx))
+            .role(Role::Dialog)
             .absolute()
             .inset_0()
             .occlude()
@@ -105,6 +107,8 @@ impl AppView {
         let reason = p.reason.as_ref().map(|r| if r.chars().count() > 300 { format!("{}…", r.chars().take(300).collect::<String>()) } else { r.clone() });
         div()
             .id("confirm-overlay")
+            .track_focus(&self.focus_for("confirm-dialog", cx))
+            .role(Role::Dialog)
             .absolute()
             .inset_0()
             .occlude()

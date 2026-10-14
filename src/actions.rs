@@ -32,11 +32,19 @@ pub fn decide(path: &Path, origin: Origin, gate: &Gate) -> Decision {
     if gate.scan_root.is_some_and(|r| r.starts_with(path)) {
         return Decision::Refused("the scanned folder or one of its parents");
     }
+    // An app right inside an Applications folder may go (the rest of /Applications stays
+    // protected), but only ever with the user's confirmation.
+    let directly_in = |dir: &Path| path.parent() == Some(dir);
+    if path.extension().is_some_and(|e| e == "app") && (directly_in(Path::new("/Applications")) || directly_in(&gate.home.join("Applications"))) {
+        return Decision::NeedsConfirm;
+    }
     if gate.protected.iter().any(|p| path.starts_with(p) || p.starts_with(path)) {
         return Decision::Refused("system folder");
     }
     let allowlisted = gate.allowlist.iter().any(|a| path.starts_with(a) && path != a);
-    if origin == Origin::Agent && allowlisted { Decision::Immediate } else { Decision::NeedsConfirm }
+    // An app or anything inside one never goes without asking, allowlisted or not.
+    let in_app = path.ancestors().any(|a| a.extension().is_some_and(|e| e.eq_ignore_ascii_case("app")));
+    if origin == Origin::Agent && allowlisted && !in_app { Decision::Immediate } else { Decision::NeedsConfirm }
 }
 
 pub fn resolve(path: &Path) -> io::Result<PathBuf> {
@@ -46,10 +54,10 @@ pub fn resolve(path: &Path) -> io::Result<PathBuf> {
     }
     let name = path.file_name().ok_or_else(|| bad("path has no file name"))?;
     // An existing non-symlink is canonicalised in full, so its case and any 8.3 short names are normalised.
-    if let Ok(meta) = fs::symlink_metadata(path) {
-        if !meta.file_type().is_symlink() {
-            return dunce::canonicalize(path);
-        }
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && !meta.file_type().is_symlink()
+    {
+        return dunce::canonicalize(path);
     }
     // Symlinks and missing paths: canonicalise only the parent, keep the final component as given.
     let parent = path.parent().ok_or_else(|| bad("path has no parent"))?;
@@ -63,10 +71,24 @@ pub struct TrashResult {
 
 /// The only place in the program that removes files: always to the Trash, never permanently.
 pub fn move_to_trash(paths: &[PathBuf]) -> Vec<TrashResult> {
+    let ctx = trash_context();
     paths
         .iter()
-        .map(|p| TrashResult { path: p.clone(), error: trash::delete(p).err().map(|e| e.to_string()) })
+        .map(|p| TrashResult { path: p.clone(), error: ctx.delete(p).err().map(|e| e.to_string()) })
         .collect()
+}
+
+/// On macOS the crate's default asks Finder via AppleScript, once per item: slow, and the Trash
+/// sound plays for each. The native call is fast and silent; files still land in the Trash.
+fn trash_context() -> trash::TrashContext {
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    ctx
 }
 
 #[cfg(test)]
@@ -172,8 +194,34 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let f = tmp.path().join("edc-trash-test.txt");
         std::fs::write(&f, "x").unwrap();
-        let r = move_to_trash(&[f.clone()]);
+        let r = move_to_trash(std::slice::from_ref(&f));
         assert!(r[0].error.is_none());
         assert!(!f.exists());
+    }
+
+    #[test]
+    fn an_app_in_an_applications_folder_always_asks() {
+        let home = PathBuf::from("/home/u");
+        let protected = [PathBuf::from("/Applications")];
+        let allowlist = [PathBuf::from("/Applications"), home.join("Applications")];
+        let gate = Gate { allowlist: &allowlist, scan_root: None, protected: &protected, home: &home };
+        for origin in [Origin::User, Origin::Agent] {
+            assert_eq!(decide(Path::new("/Applications/Old.app"), origin, &gate), Decision::NeedsConfirm);
+            assert_eq!(decide(&home.join("Applications/Old.app"), origin, &gate), Decision::NeedsConfirm, "allowlisted, still asks");
+        }
+        for still_refused in ["/Applications", "/Applications/Old.app/Contents", "/Applications/Utilities/Disk Utility.app", "/Applications/notes.txt"] {
+            assert_eq!(decide(Path::new(still_refused), Origin::User, &gate), Decision::Refused("system folder"), "{still_refused}");
+        }
+    }
+
+    #[test]
+    fn nothing_inside_an_app_goes_without_asking() {
+        let home = PathBuf::from("/home/u");
+        let allowlist = [home.join("Applications"), home.join("Downloads")];
+        let gate = Gate { allowlist: &allowlist, scan_root: None, protected: &[], home: &home };
+        for p in ["Applications/Foo.app/Contents", "Applications/Chrome Apps/X.app", "Downloads/Foo.APP", "Downloads/Foo.app/Contents/MacOS/Foo"] {
+            assert_eq!(decide(&home.join(p), Origin::Agent, &gate), Decision::NeedsConfirm, "{p}");
+        }
+        assert_eq!(decide(&home.join("Downloads/setup.dmg"), Origin::Agent, &gate), Decision::Immediate);
     }
 }

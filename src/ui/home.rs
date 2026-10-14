@@ -1,10 +1,12 @@
 use super::{AppView, card, heading, loc};
+use super::a11y::Pressable as _;
 use crate::settings::MapColors;
 use crate::state::{Core, HomeState, Screen};
 use crate::{format, platform};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::chart::LineChart;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::spinner::Spinner;
@@ -40,7 +42,125 @@ fn colors(cx: &App) -> Colors {
     Colors { muted: t.muted_foreground, primary: t.primary, success: t.success, info: t.info, border: t.border, bg: t.background, soft: t.secondary }
 }
 
+/// "View full map", easy to miss as a link: a solid button whose glow ring pulses three times
+/// when the scan result appears, then stays still. Finite on purpose: the app view is cached,
+/// so a running animation redraws all of it.
+fn view_map_button(primary: Hsla, cx: &mut Context<AppView>) -> impl IntoElement {
+    div()
+        .p(px(3.))
+        .rounded_lg()
+        .child(Button::new("view-map").primary().label(t!("map_view_full").to_string()).icon(Lucide::ArrowRight).on_click(cx.listener(|this, _, _, cx| {
+            this.app.show(Screen::DiskMap);
+            cx.notify();
+        })))
+        .with_animation("view-map-pulse", Animation::new(std::time::Duration::from_millis(4500)).with_max_fps(40.), move |ring, t| {
+            let glow = (1. - (t * 3. * std::f32::consts::TAU).cos()) / 2.;
+            ring.bg(primary.opacity(0.55 * glow))
+        })
+}
+
+/// "MM-DD" per snapshot, "MM-DD HH:MM" (UTC) for another scan on the same day; a ' keeps
+/// labels unique even then, since every chart point needs its own key.
+fn chart_labels(h: &[crate::scan::snapshots::Snapshot]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in h {
+        let mut d = crate::scan::snapshots::day(s.at)[5..].to_string();
+        if out.iter().any(|o| o.starts_with(&d)) {
+            d = format!("{d} {:02}:{:02}", s.at % 86_400 / 3600, s.at % 3600 / 60);
+        }
+        while out.contains(&d) {
+            d.push('\'');
+        }
+        out.push(d);
+    }
+    out
+}
+
+/// Index of the scan to compare the newest with: the one picked (by its time, so it survives
+/// dropped old scans and a switch to another folder), else the previous one.
+fn compare_index(h: &[crate::scan::snapshots::Snapshot], picked_at: Option<u64>) -> usize {
+    let newest = h.len() - 1;
+    picked_at.and_then(|at| h[..newest].iter().position(|s| s.at == at)).unwrap_or(newest - 1)
+}
+
+fn signed(delta: i64, l: &str) -> String {
+    format!("{}{}", if delta < 0 { "−" } else { "+" }, format::size(delta.unsigned_abs(), l))
+}
+
 impl AppView {
+    fn history_card(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
+        let c = colors(cx);
+        let l = loc();
+        let h = &core.history;
+        let mut body = card(c.border, c.bg).child(div().font_weight(FontWeight::SEMIBOLD).child(t!("history_title").to_string()));
+        if h.len() < 2 {
+            return body.child(div().text_sm().text_color(c.muted).child(t!("history_once").to_string())).into_any_element();
+        }
+        let newest = h.len() - 1;
+        let base = compare_index(h, self.history_compare);
+        let labels = chart_labels(h);
+        // The chart's label plus the year: "2026-10-13", or "2026-10-13 08:07" for a second scan that day.
+        let since = format!("{}{}", &crate::scan::snapshots::day(h[base].at)[..5], labels[base]);
+        let points: Vec<(String, f64)> = labels.into_iter().zip(h).map(|(d, s)| (d, s.total as f64 / 1e9)).collect();
+        let n = h.len() as f32;
+        let chart = LineChart::new(points).x(|p: &(String, f64)| p.0.clone()).y(|p| p.1).dot().stroke(c.primary).tick_margin((h.len() / 8).max(1));
+        // LineChart has no click events; equal columns centred on its evenly spaced points.
+        let hits = div().absolute().top_0().bottom_0().left(relative(-0.5 / (n - 1.))).w(relative(n / (n - 1.))).h_flex().children(h.iter().enumerate().map(|(i, s)| {
+            let at = s.at;
+            div().id(("hist-pt", i)).flex_1().h_full().flex().justify_center().when(i == base, |d| d.child(div().w(px(28.)).h_full().rounded_md().bg(c.primary.opacity(0.15)))).when(i < newest, |d| d.cursor_pointer().a11y_press(&self.focus_for(format!("hist-pt-{i}"), cx), crate::scan::snapshots::day(at), c.primary).on_click(cx.listener(move |this, _, _, cx| {
+                this.history_compare = Some(at);
+                this.history_open.clear();
+                cx.notify();
+            })))
+        }));
+        let total = h[newest].total as i64 - h[base].total as i64;
+        let mut rows = Vec::new();
+        self.change_rows(&h[base], &h[newest], "", 1, &mut rows, cx);
+        body = body
+            // The click columns reach half a column past the chart; clip them to the card.
+            .child(div().h(px(160.)).px_4().overflow_hidden().child(div().relative().size_full().child(chart).child(hits)))
+            .child(div().text_xs().text_color(c.muted).child(t!("history_hint").to_string()))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("history_since", date = since, delta = signed(total, &l)).to_string()));
+        if rows.is_empty() {
+            body = body.child(div().text_sm().text_color(c.muted).child(t!("history_none").to_string()));
+        }
+        body.children(rows).into_any_element()
+    }
+
+    /// Top 5 changes under `under`; opened rows add their own children (up to depth 3).
+    fn change_rows(&self, old: &crate::scan::snapshots::Snapshot, new: &crate::scan::snapshots::Snapshot, under: &str, depth: usize, rows: &mut Vec<AnyElement>, cx: &mut Context<Self>) {
+        let c = colors(cx);
+        let warning = cx.theme().warning;
+        let l = loc();
+        for ch in crate::scan::snapshots::diff(old, new, under).into_iter().take(5) {
+            // Keyed by the newest scan too, so a new scan or another folder starts with all rows closed.
+            let key = format!("{}:{}", new.at, ch.path);
+            let open = self.history_open.contains(&key);
+            let name = ch.path.rsplit('/').next().unwrap_or(&ch.path).to_string();
+            rows.push(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .pl(px(16. * (depth - 1) as f32))
+                    .child(div().w(px(22.)).when(ch.has_children && depth < crate::scan::snapshots::DEPTH, |d| {
+                        d.child(Button::new(SharedString::from(format!("hist-{key}"))).accessibility_label(t!("a11y_expand").to_string()).ghost().xsmall().icon(if open { Lucide::ChevronDown } else { Lucide::ChevronRight }).on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.history_open.remove(&key) {
+                                this.history_open.insert(key.clone());
+                            }
+                            cx.notify();
+                        })))
+                    }))
+                    .child(Icon::new(Lucide::Folder).size_4().text_color(c.muted))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(if ch.delta > 0 { warning } else { c.success }).child(signed(ch.delta, &l)))
+                    .into_any_element(),
+            );
+            if open {
+                self.change_rows(old, new, &ch.path, depth + 1, rows, cx);
+            }
+        }
+    }
+
     pub(super) fn home(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
         let body = match core.home_state() {
             HomeState::Idle => self.home_idle(core, cx),
@@ -166,6 +286,7 @@ impl AppView {
                     .py_2()
                     .rounded_lg()
                     .cursor_pointer()
+                    .a11y_press(&self.focus_for(format!("recent-{i}"), cx), name.clone(), c.primary)
                     .hover(|s| s.bg(c.soft))
                     .child(Icon::new(Lucide::Folder).text_color(c.primary))
                     .child(
@@ -179,7 +300,7 @@ impl AppView {
                     .child(div().text_sm().child(format::size(r.size, &l)))
                     .child(div().w(px(100.)).text_xs().text_color(c.muted).text_right().child(t!(key, n = n.to_string()).to_string()))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let _ = this.app.start_scan(path.clone());
+                        drop(this.app.start_scan(path.clone()));
                         cx.notify();
                     }))
             })
@@ -195,7 +316,7 @@ impl AppView {
     }
 
     /// "Where should I look?": one card per common place, plus "Other folder…".
-    fn place_picker(&self, core: &Core, cx: &mut Context<Self>) -> Div {
+    pub(super) fn place_picker(&self, core: &Core, cx: &mut Context<Self>) -> Div {
         let c = colors(cx);
         let l = loc();
         let home = platform::home();
@@ -231,6 +352,7 @@ impl AppView {
             let last = core.settings.recent_size(&place.path).map(|b| t!("place_last", size = format::size(b, &l)).to_string());
             let path = place.path.clone();
             card_base(("place", i))
+                .a11y_press(&self.focus_for(format!("place-{i}"), cx), t!(place.key).to_string(), c.primary)
                 .when(place.recommended, |d| d.border_color(c.primary))
                 .child(Icon::new(icon).size_5().flex_shrink_0().text_color(c.primary))
                 .child(
@@ -252,11 +374,12 @@ impl AppView {
                         ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    let _ = this.app.start_scan(path.clone());
+                    drop(this.app.start_scan(path.clone()));
                     cx.notify();
                 }))
-        });
+        }).collect::<Vec<_>>();
         let other = card_base(("place-other", 0))
+            .a11y_press(&self.focus_for("place-other", cx), t!("place_other").to_string(), c.primary)
             .child(Icon::new(Lucide::FolderOpen).size_5().flex_shrink_0().text_color(c.muted))
             .child(div().flex_1().min_w_0().font_weight(FontWeight::SEMIBOLD).child(t!("place_other").to_string()))
             .on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)));
@@ -281,6 +404,7 @@ impl AppView {
             .border_color(c.border)
             .bg(c.bg)
             .cursor_pointer()
+            .a11y_press(&self.focus_for("system-tools", cx), t!("home_system_tools").to_string(), c.primary)
             .hover(|s| s.bg(c.soft).border_color(c.primary))
             .child(Icon::new(Lucide::Sparkles).size_5().flex_shrink_0().text_color(c.primary))
             .child(div().flex_1().min_w_0().font_weight(FontWeight::SEMIBOLD).child(t!("home_system_tools").to_string()))
@@ -379,7 +503,7 @@ impl AppView {
             card(c.border, c.bg)
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("map_preview_title").to_string()))
                 // The live map always tells blocks apart; advice colours need the finished scan.
-                .child(div().h(px(220.)).overflow_hidden().child(self.tree_map(core, &p.live.snapshot(&target.to_string_lossy()), &target, self.mini_bounds.clone(), MapColors::Types, false, cx)))
+                .child(div().h(px(220.)).overflow_hidden().child(self.tree_map(core, &p.live.snapshot(&target.to_string_lossy()), &target, self.map.mini_bounds.clone(), MapColors::Types, false, cx)))
                 .child(div().text_xs().text_color(c.muted).child(t!("scan_live_caption").to_string()))
                 .into_any_element(),
         ]
@@ -399,7 +523,7 @@ impl AppView {
                         .h_flex()
                         .gap_2()
                         .child(Button::new("rescan").outline().small().icon(Lucide::RefreshCw).label(t!("scan_again").to_string()).on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = this.app.start_scan(rescan.clone());
+                            drop(this.app.start_scan(rescan.clone()));
                             cx.notify();
                         })))
                         .child(Button::new("pick").ghost().small().icon(Lucide::FolderOpen).label(t!("home_pick").to_string()).on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)))),
@@ -411,16 +535,37 @@ impl AppView {
                     div()
                         .h_flex()
                         .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(t!("map_preview_title").to_string()))
-                        .child(Button::new("view-map").link().small().label(t!("map_view_full").to_string()).icon(Lucide::ArrowRight).on_click(cx.listener(|this, _, _, cx| {
+                        .child(view_map_button(c.primary, cx)),
+                )
+                .child(
+                    div()
+                        .id("mini-map")
+                        .h(px(220.))
+                        .overflow_hidden()
+                        .cursor_pointer()
+                        .a11y_press(&self.focus_for("mini-map", cx), super::a11y::map_summary_of(core), c.primary)
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.app.show(Screen::DiskMap);
                             cx.notify();
-                        }))),
+                        }))
+                        .child(self.map_view(core, self.map.mini_bounds.clone(), false, cx)),
                 )
-                .child(div().h(px(220.)).overflow_hidden().child(self.map_view(core, self.mini_bounds.clone(), false, cx)))
                 .child(div().text_xs().text_color(c.muted).child(t!("map_caption").to_string()))
                 .into_any_element(),
-            Button::new("find-cleanup")
+            self.history_card(core, cx),
+            Button::new("free-up")
                 .primary()
+                .large()
+                .w_full()
+                .icon(Lucide::Gauge)
+                .label(t!("free_home_button").to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.app.show(Screen::FreeUp);
+                    cx.notify();
+                }))
+                .into_any_element(),
+            Button::new("find-cleanup")
+                .outline()
                 .large()
                 .w_full()
                 .icon(Lucide::Sparkles)
@@ -466,7 +611,7 @@ impl AppView {
                 )
                 .into_any_element(),
             Button::new("scan-again").primary().large().w_full().icon(Lucide::RefreshCw).label(t!("scan_again").to_string()).on_click(cx.listener(move |this, _, _, cx| {
-                let _ = this.app.start_scan(root.clone());
+                drop(this.app.start_scan(root.clone()));
                 cx.notify();
             }))
             .into_any_element(),
@@ -485,11 +630,31 @@ impl AppView {
                 && let Some(p) = paths.into_iter().next()
             {
                 let _ = this.update(cx, |v, cx| {
-                    let _ = v.app.start_scan(p);
+                    drop(v.app.start_scan(p));
                     cx.notify();
                 });
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn compare_follows_the_picked_scan_and_falls_back_to_previous() {
+        let s = |at| crate::scan::snapshots::Snapshot { at, total: 0, folders: vec![] };
+        let h = [s(10), s(20), s(30), s(40)];
+        assert_eq!(super::compare_index(&h, None), 2);
+        assert_eq!(super::compare_index(&h, Some(20)), 1);
+        assert_eq!(super::compare_index(&h[1..], Some(20)), 0); // oldest dropped: same scan, new index
+        assert_eq!(super::compare_index(&h, Some(40)), 2); // newest can't compare with itself
+        assert_eq!(super::compare_index(&h, Some(99)), 2); // picked on another folder
+    }
+
+    #[test]
+    fn unique_labels() {
+        let s = |at| crate::scan::snapshots::Snapshot { at, total: 0, folders: vec![] };
+        assert_eq!(super::chart_labels(&[s(0), s(3600), s(3630), s(86_400)]), ["01-01", "01-01 01:00", "01-01 01:00'", "01-02"]);
     }
 }

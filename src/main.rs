@@ -3,16 +3,15 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod actions;
-mod cleaners;
+mod finders;
 mod format;
-mod history;
 mod mcp;
 mod platform;
 mod rules;
 mod scan;
 mod settings;
 mod state;
-mod treemap;
+mod wizard;
 mod ui;
 
 fn main() {

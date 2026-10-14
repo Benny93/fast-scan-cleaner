@@ -127,8 +127,7 @@ mod tests {
     fn save_then_load_roundtrips_and_creates_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/settings.toml");
-        let mut s = Settings::default();
-        s.language = Some("de".into());
+        let mut s = Settings { language: Some("de".into()), ..Settings::default() };
         s.allowlist.push("/tmp/x".into());
         s.push_recent("/a".into(), 5, 1);
         s.save(&path).unwrap();

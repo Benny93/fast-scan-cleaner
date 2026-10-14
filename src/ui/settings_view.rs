@@ -36,7 +36,7 @@ impl AppView {
                 .border_color(border)
                 .child(Icon::new(Lucide::Folder))
                 .child(div().flex_1().truncate().child(p.display().to_string()))
-                .child(Button::new(("allow-remove", i)).ghost().small().icon(Lucide::X).tooltip(t!("settings_remove").to_string()).on_click(cx.listener(move |this, _, _, cx| {
+                .child(Button::new(("allow-remove", i)).accessibility_label(t!("settings_remove").to_string()).ghost().small().icon(Lucide::X).tooltip(t!("settings_remove").to_string()).on_click(cx.listener(move |this, _, _, cx| {
                     this.app.update_settings(|s| s.allowlist.retain(|a| *a != p2));
                     cx.notify();
                 })))

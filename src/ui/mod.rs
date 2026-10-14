@@ -18,16 +18,24 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
+mod a11y;
+mod agent;
+mod apps_card;
+mod models_card;
 mod cleanup;
 mod dialog;
 mod disk_map;
 mod home;
 mod hover_tip;
 mod mascot;
+mod nav_history;
+mod old_files_card;
 mod settings_view;
 mod tree;
+mod welcome;
+mod wizard;
 
-actions!(fastscancleaner, [Refresh, Back, Forward, TrashMarked, ClearMarked]);
+actions!(fastscancleaner, [Refresh, Back, Forward, TrashMarked, ClearMarked, ShowHome, ShowMap, ShowCleanup, ShowFreeUp, ShowSettings]);
 
 pub fn apply_language(setting: Option<&str>) {
     rust_i18n::set_locale(format::pick_locale(setting, sys_locale::get_locale()));
@@ -88,12 +96,32 @@ pub(crate) fn heading(icon: Option<AnyElement>, title: String, subtitle: String,
         .child(div().v_flex().gap_1().child(div().text_2xl().font_weight(FontWeight::BOLD).child(title)).child(div().text_color(muted).child(subtitle)))
 }
 
+/// Tick or untick `key` in a set of ticked items, as a checkbox's click says.
+pub(crate) fn tick<T: Eq + std::hash::Hash + Clone>(set: &mut std::collections::HashSet<T>, key: &T, on: bool) {
+    if on {
+        set.insert(key.clone());
+    } else {
+        set.remove(key);
+    }
+}
+
 pub fn run(app: Arc<Shared>, rx: async_channel::Receiver<()>) {
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
         platform::set_app_icon();
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-r", Refresh, None),
+            // The sidebar has no keyboard focus of its own: views are one shortcut away.
+            KeyBinding::new("cmd-1", ShowHome, None),
+            KeyBinding::new("ctrl-1", ShowHome, None),
+            KeyBinding::new("cmd-2", ShowMap, None),
+            KeyBinding::new("ctrl-2", ShowMap, None),
+            KeyBinding::new("cmd-3", ShowCleanup, None),
+            KeyBinding::new("ctrl-3", ShowCleanup, None),
+            KeyBinding::new("cmd-4", ShowFreeUp, None),
+            KeyBinding::new("ctrl-4", ShowFreeUp, None),
+            KeyBinding::new("cmd-5", ShowSettings, None),
+            KeyBinding::new("ctrl-5", ShowSettings, None),
             KeyBinding::new("ctrl-r", Refresh, None),
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("ctrl-[", Back, None),
@@ -121,7 +149,17 @@ pub fn run(app: Arc<Shared>, rx: async_channel::Receiver<()>) {
             cx.open_window(options, |window, cx| {
                 let tip = cx.new(|_| hover_tip::HoverTip::default());
                 let view = cx.new(|cx| AppView::new(app.clone(), rx, tip.clone(), window, cx));
-                let shell = cx.new(|_| Shell { app, view, mascot: None, tip });
+                let shell = cx.new(|cx| Shell { app, view, mascot: None, tip, splash: Some((std::time::Instant::now(), cx.new(mascot::Mascot::new))) });
+                // Any key skips the splash.
+                let weak = shell.downgrade();
+                cx.observe_keystrokes(move |_, _, cx| {
+                    let _ = weak.update(cx, |s, cx| {
+                        if s.splash.take().is_some() {
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
                 cx.new(|cx| Root::new(shell, window, cx))
             })
             .expect("failed to open window");
@@ -134,54 +172,28 @@ pub fn run(app: Arc<Shared>, rx: async_channel::Receiver<()>) {
 pub struct AppView {
     pub(crate) app: Arc<Shared>,
     focus: FocusHandle,
-    /// Disk Map shows the file table instead of the treemap.
-    pub(crate) show_list: bool,
-    pub(crate) details_open: bool,
-    /// Treemap area size from the last frame; the layout uses it.
-    pub(crate) map_bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// Same for the small map on the Home screen.
-    pub(crate) mini_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) volumes: Vec<platform::Volume>,
     pub(crate) port_input: Entity<InputState>,
     pub(crate) lang_select: Entity<gpui_kit::component::select::SelectState<gpui_kit::component::select::SearchableVec<String>>>,
     /// The last port the user typed was invalid; cleared by the next valid save.
     pub(crate) port_invalid: bool,
-    pub(crate) file_table: Entity<gpui_kit::component::table::TableState<disk_map::FileRows>>,
-    /// (zoomed folder, its size) the table was last filled for.
-    pub(crate) table_key: Option<(std::path::PathBuf, u64)>,
-    /// Folders visited in the Disk Map, for back/forward.
-    pub(crate) history: crate::history::History,
-    /// Findings ticked on the Cleanup screen.
-    pub(crate) cleanup_selected: std::collections::BTreeSet<std::path::PathBuf>,
-    /// Expanded groups on the Cleanup screen ("safety:rule" for findings, "git:<kind>" and "git:<item id>").
-    pub(crate) cleanup_open: std::collections::BTreeSet<String>,
-    /// Git branches / worktrees ticked on the Cleanup screen: (system item id, branch name or path).
-    pub(crate) git_selected: std::collections::BTreeSet<(String, String)>,
-    /// Folder tree next to the map: shown?, expanded folders (relative), rows, scroll, last synced zoom.
-    pub(crate) tree_visible: bool,
-    pub(crate) tree_open: std::collections::BTreeSet<std::path::PathBuf>,
-    pub(crate) tree_rows: Rc<Vec<tree::TreeRow>>,
-    pub(crate) tree_scroll: UniformListScrollHandle,
-    pub(crate) tree_last_zoom: Option<std::path::PathBuf>,
-    /// Row widths of the tree and of the search results (all rows equal, for horizontal scrolling).
-    pub(crate) tree_row_w: f32,
-    /// Width of the folder tree pane, changed by dragging its right edge; `Some` while dragging
-    /// (the pointer's offset from the edge when the drag started).
-    pub(crate) tree_width: f32,
-    pub(crate) tree_drag: Option<f32>,
-    pub(crate) tree_hit_w: f32,
-    pub(crate) tree_hits_scroll: UniformListScrollHandle,
-    /// Fuzzy search over the whole scan: the field, the results (`None` = no query, show the tree)
-    /// and a counter that cancels an older search when the query changes.
-    pub(crate) tree_query: Entity<InputState>,
+    /// Time of the scan the Over-time card compares with; None = the previous one.
+    history_compare: Option<u64>,
+    history_open: std::collections::HashSet<String>,
+    /// Index into the welcome guide's steps while it is open.
+    guide: Option<usize>,
+    welcome_mascot: Option<Entity<mascot::Mascot>>,
+    /// One focus handle per pressable area (see `a11y::Pressable`), stable across renders.
+    focus_handles: std::cell::RefCell<std::collections::HashMap<SharedString, FocusHandle>>,
+    /// A confirmation that just opened takes keyboard focus once (then Tab reaches its buttons).
+    dialog_focused: bool,
+    /// Screen of the last render: a new screen moves keyboard focus back to its top.
+    focused_screen: Option<Screen>,
     pub(crate) hover_tip: Entity<hover_tip::HoverTip>,
-    pub(crate) tree_hits: Option<Rc<Vec<tree::Hit>>>,
-    pub(crate) tree_search_gen: Arc<std::sync::atomic::AtomicU64>,
-    /// Blocks right-clicked in the treemap (absolute paths), for trashing several at once.
-    pub(crate) map_marked: std::collections::BTreeSet<std::path::PathBuf>,
-    pub(crate) map_focus: FocusHandle,
-    /// Disk Map shows a folder's "+ N small items" as their own map: (absolute folder, first child shown).
-    pub(crate) map_skip: Option<(std::path::PathBuf, usize)>,
+    pub(crate) tree: tree::TreeState,
+    pub(crate) wizard: wizard::WizardState,
+    pub(crate) cleanup: cleanup::CleanupState,
+    pub(crate) map: disk_map::MapState,
 }
 
 /// Window content: the app, drawn from GPUI's view cache, with the mascot on top.
@@ -194,16 +206,51 @@ struct Shell {
     mascot: Option<Entity<mascot::Mascot>>,
     /// The treemap's hover label, drawn above everything.
     tip: Entity<hover_tip::HoverTip>,
+    /// Start time and mascot of the splash screen, until it has faded out or was skipped.
+    splash: Option<(std::time::Instant, Entity<mascot::Mascot>)>,
+}
+
+/// Splash screen: shown this long, then faded out over `SPLASH_FADE_MS`.
+const SPLASH_HOLD_MS: u64 = 900;
+const SPLASH_FADE_MS: u64 = 300;
+
+/// Splash opacity `elapsed_ms` after start; 0 means gone. Reduce motion: no fade.
+fn splash_alpha(elapsed_ms: u64, reduce_motion: bool) -> f32 {
+    if elapsed_ms >= SPLASH_HOLD_MS + SPLASH_FADE_MS {
+        0.
+    } else if reduce_motion || elapsed_ms <= SPLASH_HOLD_MS {
+        1.
+    } else {
+        let t = (elapsed_ms - SPLASH_HOLD_MS) as f32 / SPLASH_FADE_MS as f32;
+        1. - t * t
+    }
+}
+
+/// The view content fades in while sliding up a little; keyed by screen, so each switch replays it.
+fn view_transition(screen: Screen, body: AnyElement, reduce_motion: bool) -> AnyElement {
+    let view = div().relative().size_full().child(body);
+    if reduce_motion {
+        return view.into_any_element();
+    }
+    view.with_animation(ElementId::Name(format!("view-{screen:?}").into()), Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()), |v, t| v.opacity(t).top(px((1. - t) * 12.)))
+        .into_any_element()
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let splash = self.splash.as_ref().map(|(start, m)| (splash_alpha(start.elapsed().as_millis() as u64, cx.reduce_motion()), m.clone())).filter(|(alpha, _)| *alpha > 0.);
+        if splash.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.splash = None;
+        }
         // Changing screens notifies the app view, which makes this shell re-render too.
         // Hidden while a confirm dialog is open, since it draws above the whole app view.
+        let guide_open = self.view.read(cx).guide.is_some();
         let home = {
             let c = self.app.core.lock().unwrap();
             c.screen == Screen::Home && c.pending.is_none()
-        };
+        } && !guide_open;
         match (home, self.mascot.is_some()) {
             (true, false) => self.mascot = Some(cx.new(mascot::Mascot::new)),
             (false, true) => self.mascot = None,
@@ -215,11 +262,33 @@ impl Render for Shell {
             .child(AnyView::from(self.view.clone()).cached(StyleRefinement::default().size_full()))
             .children(self.mascot.clone().map(|m| div().absolute().top(px(40.)).right(px(16.)).child(m)))
             .child(div().absolute().inset_0().child(self.tip.clone()))
+            .children(splash.map(|(alpha, mascot)| {
+                let t = cx.theme();
+                div()
+                    .id("splash")
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .bg(t.background)
+                    .opacity(alpha)
+                    .v_flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .child(mascot)
+                    .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(t.foreground).child(t!("app_title").to_string()))
+                    .child(div().text_color(t.muted_foreground).child(t!("home_tagline").to_string()))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|s, _, _, cx| {
+                        s.splash = None;
+                        cx.notify();
+                    }))
+            }))
     }
 }
 
 impl AppView {
     fn new(app: Arc<Shared>, rx: async_channel::Receiver<()>, hover_tip: Entity<hover_tip::HoverTip>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let guide = app.welcome_needed().then_some(0);
         // Re-render on every core change; show pending toasts; keep disk usage current.
         cx.spawn_in(window, async move |this, cx| {
             while rx.recv().await.is_ok() {
@@ -246,6 +315,52 @@ impl AppView {
                 if alive.is_err() {
                     break;
                 }
+            }
+        })
+        .detach();
+        // Agent input from MCP, applied to the window without the real mouse. Checked again here,
+        // on the UI thread, so nothing slips past a confirmation that opened in the meantime.
+        let inputs = app.inputs.clone();
+        let gate = app.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok((input, reply)) = inputs.recv().await {
+                if input == crate::state::Input::Reveal {
+                    // Answer once a fresh frame is drawn, so the screenshot shows the current state.
+                    // The view is cached, so it has to be told to render again.
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                    let _ = cx.update(|window, _| {
+                        if !window.is_visible() {
+                            platform::order_front_quietly();
+                        }
+                        window.refresh();
+                        // ponytail: two frames, because the disk map lays out in the frame after its parent
+                        window.on_next_frame(move |window, _| {
+                            window.refresh();
+                            window.on_next_frame(move |_, _| {
+                                let _ = reply.send(Ok(()));
+                            });
+                        });
+                    });
+                    continue;
+                }
+                let r = cx.update(|window, cx| {
+                    gate.input_allowed()?;
+                    agent::dispatch(input, gate.shot_width.load(Relaxed), window, cx)
+                });
+                let _ = reply.send(r.unwrap_or_else(|_| Err("app window is closed".into())));
+            }
+        })
+        .detach();
+        // While the welcome guide is open, redraw every second: its access step re-checks.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let alive = this.update(cx, |v, cx| {
+                if v.guide.is_some() {
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
             }
         })
         .detach();
@@ -290,6 +405,16 @@ impl AppView {
             }
         })
         .detach();
+        let wizard_gb = cx.new(|cx| InputState::new(window, cx).placeholder("25").validate(|s, _| wizard::gb_typing_ok(s)));
+        cx.subscribe_in(&wizard_gb, window, |this, input, ev: &gpui_kit::component::input::InputEvent, _, cx| {
+            if matches!(ev, gpui_kit::component::input::InputEvent::Change)
+                && let Some(b) = wizard::parse_gb(&input.read(cx).value())
+            {
+                this.wizard.target = crate::wizard::Target::Bytes(b);
+                cx.notify();
+            }
+        })
+        .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let file_table = cx.new(|cx| gpui_kit::component::table::TableState::new(disk_map::FileRows { rows: Vec::new() }, window, cx).row_selectable(true));
@@ -306,37 +431,67 @@ impl AppView {
         AppView {
             app,
             focus,
-            show_list: false,
-            details_open: true,
-            map_bounds: Rc::new(Cell::new(Bounds::default())),
-            mini_bounds: Rc::new(Cell::new(Bounds::default())),
             volumes: platform::volumes(),
             port_input,
             lang_select,
             port_invalid: false,
-            file_table,
-            table_key: None,
-            history: Default::default(),
-            cleanup_selected: Default::default(),
-            cleanup_open: Default::default(),
-            git_selected: Default::default(),
-            tree_visible: true,
-            tree_open: Default::default(),
-            tree_rows: Default::default(),
-            tree_scroll: UniformListScrollHandle::new(),
-            tree_last_zoom: None,
-            tree_row_w: 0.,
-            tree_width: 280.,
-            tree_drag: None,
-            tree_hit_w: 0.,
-            tree_hits_scroll: UniformListScrollHandle::new(),
-            tree_query,
+            history_compare: None,
+            history_open: Default::default(),
+            guide,
+            welcome_mascot: None,
+            focus_handles: Default::default(),
+            dialog_focused: false,
+            focused_screen: None,
             hover_tip,
-            tree_hits: None,
-            tree_search_gen: Default::default(),
-            map_marked: Default::default(),
-            map_focus: cx.focus_handle(),
-            map_skip: None,
+            tree: tree::TreeState {
+                visible: true,
+                open: Default::default(),
+                rows: Default::default(),
+                scroll: UniformListScrollHandle::new(),
+                last_zoom: None,
+                row_w: 0.,
+                width: 280.,
+                drag: None,
+                hit_w: 0.,
+                hits_scroll: UniformListScrollHandle::new(),
+                query: tree_query,
+                hits: None,
+                search_gen: Default::default(),
+            },
+            wizard: wizard::WizardState {
+                target: crate::wizard::Target::Bytes(10_000_000_000),
+                ticks: Default::default(),
+                seen: None,
+                manual: false,
+                trashed: None,
+                open: Default::default(),
+                gb: wizard_gb,
+            },
+            cleanup: cleanup::CleanupState {
+                selected: Default::default(),
+                open: Default::default(),
+                git_selected: Default::default(),
+                dupe_keep: Default::default(),
+                dupes_shown: 50,
+                apps_ticked: Default::default(),
+                apps_open: Default::default(),
+                models_ticked: Default::default(),
+                old_ticked: Default::default(),
+                old_open: Default::default(),
+                old_shown: 50,
+            },
+            map: disk_map::MapState {
+                marked: Default::default(),
+                skip: None,
+                focus: cx.focus_handle(),
+                bounds: Rc::new(Cell::new(Bounds::default())),
+                mini_bounds: Rc::new(Cell::new(Bounds::default())),
+                show_list: false,
+                details_open: true,
+                file_table,
+                table_key: None,
+                history: Default::default(),
+            },
         }
     }
 
@@ -345,11 +500,20 @@ impl AppView {
         if self.app.core.lock().unwrap().screen != Screen::DiskMap {
             return;
         }
-        let target = if forward { self.history.forward() } else { self.history.back() };
+        let target = if forward { self.map.history.forward() } else { self.map.history.back() };
         if let Some(path) = target {
             let _ = self.app.navigate(&path);
             cx.notify();
         }
+    }
+
+    fn show_view(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        // An open confirmation stays in front: the view behind it doesn't change.
+        if self.app.core.lock().unwrap().pending.is_some() {
+            return;
+        }
+        self.app.show(screen);
+        cx.notify();
     }
 
     fn nav_item(&self, core: &Core, key: &str, icon: Lucide, screen: Screen, enabled: bool, cx: &mut Context<Self>) -> SidebarMenuItem {
@@ -382,27 +546,36 @@ impl AppView {
                     .child(self.nav_item(core, "nav_home", Lucide::House, Screen::Home, true, cx))
                     .child(self.nav_item(core, "nav_map", Lucide::Map, Screen::DiskMap, has_scan, cx))
                     .child(self.nav_item(core, "nav_cleanup", Lucide::Sparkles, Screen::Cleanup, true, cx))
+                    .child(self.nav_item(core, "nav_free_up", Lucide::Gauge, Screen::FreeUp, true, cx))
                     .child(self.nav_item(core, "nav_settings", Lucide::Settings, Screen::Settings, true, cx)),
             )
     }
 
-    fn help(&self) -> impl IntoElement {
+    fn help(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
         Popover::new("help")
-            .trigger(Button::new("help-btn").ghost().small().icon(Lucide::CircleQuestionMark).tooltip(t!("help_title").to_string()))
-            .content(|_, _, _| {
+            .trigger(Button::new("help-btn").accessibility_label(t!("help_title").to_string()).ghost().small().icon(Lucide::CircleQuestionMark).tooltip(t!("help_title").to_string()))
+            .content(move |_, _, _| {
+                let view = view.clone();
                 div()
                     .v_flex()
                     .w(px(320.))
                     .p_3()
                     .gap_2()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("help_title").to_string()))
-                    .children(["help_1", "help_2", "help_3"].into_iter().enumerate().map(|(i, key)| {
+                    .children(["help_1", "help_2", "help_3", "help_keys"].into_iter().enumerate().map(|(i, key)| {
                         div()
                             .h_flex()
                             .gap_2()
                             .items_start()
                             .child(Tag::primary().small().rounded_full().child((i + 1).to_string()))
-                            .child(div().flex_1().min_w_0().text_sm().child(t!(key).to_string()))
+                            .child(div().flex_1().min_w_0().text_sm().child(t!(key, modifier = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" }).to_string()))
+                    }))
+                    .child(Button::new("help-welcome").outline().small().w_full().label(t!("welcome_show").to_string()).on_click(move |_, _, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.guide = Some(0);
+                            cx.notify();
+                        });
                     }))
             })
     }
@@ -448,10 +621,39 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
         let core = app.core.lock().unwrap();
+        // A scan picked on the guide's last step ends the guide.
+        if self.guide_step() == Some(welcome::Step::Places) && core.scanning.is_some() {
+            self.guide = None;
+            self.app.welcome_done();
+        }
+        if self.guide.is_some() {
+            let (bg, fg) = {
+                let t = cx.theme();
+                (t.background, t.foreground)
+            };
+            let guide = self.welcome(&core, cx);
+            return div().id("app").relative().size_full().v_flex().bg(bg).text_color(fg).child(TitleBar::new()).child(guide).children(core.pending.as_ref().map(|p| self.confirm_dialog(p, cx))).children(Root::render_notification_layer(window, cx));
+        }
+        // The element that had focus is gone with the old screen; Tab would go nowhere.
+        if self.focused_screen != Some(core.screen) {
+            if self.focused_screen.is_some() {
+                window.focus(&self.focus, cx);
+            }
+            self.focused_screen = Some(core.screen);
+        }
+        match (core.pending.is_some(), self.dialog_focused) {
+            (true, false) => {
+                window.focus(&self.focus_for("confirm-dialog", cx), cx);
+                self.dialog_focused = true;
+            }
+            (false, true) => self.dialog_focused = false,
+            _ => {}
+        }
         let body = match core.screen {
             Screen::Home => self.home(&core, cx),
             Screen::DiskMap => self.disk_map(&core, cx),
             Screen::Cleanup => self.cleanup(&core, cx),
+            Screen::FreeUp => self.free_up(&core, window, cx),
             Screen::Settings => self.settings_view(&core, window, cx),
         };
         let notices = self.notices(&core);
@@ -464,15 +666,20 @@ impl Render for AppView {
             .id("app")
             .key_context("FastScanCleaner")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &ShowHome, _, cx| this.show_view(Screen::Home, cx)))
+            .on_action(cx.listener(|this, _: &ShowMap, _, cx| this.show_view(Screen::DiskMap, cx)))
+            .on_action(cx.listener(|this, _: &ShowCleanup, _, cx| this.show_view(Screen::Cleanup, cx)))
+            .on_action(cx.listener(|this, _: &ShowFreeUp, _, cx| this.show_view(Screen::FreeUp, cx)))
+            .on_action(cx.listener(|this, _: &ShowSettings, _, cx| this.show_view(Screen::Settings, cx)))
             .on_action(cx.listener(|this, _: &Refresh, _, cx| {
-                let _ = this.app.refresh(None);
+                drop(this.app.refresh(None));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_history(false, cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_history(true, cx)))
             .on_action(cx.listener(|this, _: &TrashMarked, _, cx| this.trash_marked(cx)))
             .on_action(cx.listener(|this, _: &ClearMarked, _, cx| {
-                this.map_marked.clear();
+                this.map.marked.clear();
                 cx.notify();
             }))
             .relative()
@@ -480,7 +687,7 @@ impl Render for AppView {
             .v_flex()
             .bg(bg)
             .text_color(fg)
-            .child(TitleBar::new().child(div().flex_1()).child(div().pr_2().child(self.help())))
+            .child(TitleBar::new().child(div().flex_1()).child(div().pr_2().child(self.help(cx))))
             .child(
                 div().flex_1().min_h_0().h_flex().child(self.sidebar(&core, cx)).child(
                     div()
@@ -489,10 +696,27 @@ impl Render for AppView {
                         .min_w_0()
                         .h_full()
                         .when(!notices.is_empty(), |d| d.child(div().v_flex().gap_2().px_6().pt_4().children(notices)))
-                        .child(div().flex_1().min_h_0().child(body)),
+                        .child(div().flex_1().min_h_0().child(view_transition(core.screen, body, cx.reduce_motion()))),
                 ),
             )
             .children(core.pending.as_ref().map(|p| self.confirm_dialog(p, cx)))
             .children(notifications)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SPLASH_FADE_MS, SPLASH_HOLD_MS, splash_alpha};
+
+    #[test]
+    fn splash_holds_then_fades_out() {
+        assert_eq!(splash_alpha(0, false), 1.);
+        assert_eq!(splash_alpha(SPLASH_HOLD_MS, false), 1.);
+        let mid = splash_alpha(SPLASH_HOLD_MS + SPLASH_FADE_MS / 2, false);
+        assert!(mid > 0. && mid < 1., "{mid}");
+        assert_eq!(splash_alpha(SPLASH_HOLD_MS + SPLASH_FADE_MS, false), 0.);
+        // Reduce motion: no fade, just gone.
+        assert_eq!(splash_alpha(SPLASH_HOLD_MS + SPLASH_FADE_MS / 2, true), 1.);
+        assert_eq!(splash_alpha(SPLASH_HOLD_MS + SPLASH_FADE_MS, true), 0.);
     }
 }

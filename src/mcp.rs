@@ -1,6 +1,6 @@
 use crate::actions::Origin;
 use crate::scan::{self, Kind, Node};
-use crate::state::{ItemStatus, Report, Shared};
+use crate::state::{Dupes, Input, ItemStatus, Report, Shared};
 use base64::Engine;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -56,12 +56,40 @@ pub enum ScreenName {
     Home,
     DiskMap,
     Cleanup,
+    FreeUp,
     SystemTools,
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct PointArgs {
+    /// Pixels from the left of the screenshot image.
+    pub x: f32,
+    /// Pixels from the top of the screenshot image.
+    pub y: f32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ScrollArgs {
+    pub x: f32,
+    pub y: f32,
+    /// Screenshot pixels to scroll; positive scrolls down.
+    pub dy: f32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TextArgs {
+    pub text: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct KeyArgs {
+    /// One key with optional modifiers, e.g. "enter", "escape", "tab", "cmd-f", "down".
+    pub keys: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ScreenArgs {
-    /// home, disk_map (needs a scan), cleanup, or system_tools (Cleanup with the system tools first).
+    /// home, disk_map (needs a scan), cleanup, free_up, or system_tools (Cleanup with the system tools first).
     pub screen: ScreenName,
 }
 
@@ -79,6 +107,61 @@ pub struct TrashArgs {
     pub paths: Vec<String>,
     /// Plain-language reason, shown to the user in the confirmation dialog.
     pub reason: String,
+}
+
+fn dupes_json(app: &Shared) -> serde_json::Value {
+    let c = app.core.lock().unwrap();
+    match &c.dupes {
+        Dupes::Idle => serde_json::json!({ "state": "idle" }),
+        Dupes::Running(p) => serde_json::json!({ "state": "running", "files_done": p.files_done.load(Relaxed), "files_total": p.files_total.load(Relaxed), "bytes_read": p.bytes_read.load(Relaxed) }),
+        Dupes::Done(groups) => {
+            let avoid: Vec<PathBuf> = c.findings.iter().filter(|f| f.safety != crate::rules::Safety::Keep).map(|f| f.path.clone()).collect();
+            serde_json::json!({
+            "state": "done",
+            "groups": groups.len(),
+            "wasted_total": groups.iter().map(|g| g.wasted()).sum::<u64>(),
+            "largest": groups.iter().take(50).map(|g| serde_json::json!({ "size": g.size, "wasted": g.wasted(), "copies": g.copies, "default_keep": g.copies[crate::finders::dupes::pick_keep(g, &Default::default(), &app.deps.home, &avoid)].path })).collect::<Vec<_>>(),
+            })
+        }
+    }
+}
+
+fn old_json(old: &crate::state::OldFiles) -> serde_json::Value {
+    use crate::state::OldFiles;
+    match old {
+        OldFiles::Idle | OldFiles::Loading => serde_json::json!({ "state": "loading" }),
+        OldFiles::Unavailable => serde_json::json!({ "state": "unavailable" }),
+        OldFiles::Done(list) => serde_json::json!({
+            "state": "done",
+            "files": list.iter().map(|o| serde_json::json!({ "path": o.path, "group": o.group, "last_used": o.last_used, "size": o.size })).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn models_json(models: &[crate::finders::models::Model]) -> serde_json::Value {
+    serde_json::json!({
+        "state": "done",
+        "models": models.iter().map(|m| serde_json::json!({
+            "name": m.name, "source": m.source, "size": m.size, "downloaded": m.downloaded,
+            "paths": crate::finders::models::trash_paths(m),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn apps_json(apps: &crate::state::Apps) -> serde_json::Value {
+    use crate::state::Apps;
+    match apps {
+        Apps::Idle | Apps::Loading => serde_json::json!({ "state": "loading" }),
+        Apps::Unavailable => serde_json::json!({ "state": "unavailable" }),
+        Apps::Done(list) => serde_json::json!({
+            "state": "done",
+            "apps": list.iter().map(|a| serde_json::json!({
+                "name": a.name, "path": a.path, "bundle_id": a.id, "last_used": a.last_used,
+                "size": a.size(), "app_size": a.own, "running": a.running, "movable": a.movable,
+                "leftovers": a.leftovers.iter().map(|(p, n)| serde_json::json!({ "path": p, "size": n })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }),
+    }
 }
 
 fn ok_json(v: impl Serialize) -> Result<CallToolResult, McpError> {
@@ -219,6 +302,76 @@ impl Tools {
         }))
     }
 
+    #[tool(description = "Past full scans of the currently scanned folder (date, total size) and the folders that changed most since the previous scan. Read-only.")]
+    fn get_history(&self) -> Result<CallToolResult, McpError> {
+        let c = self.app.core.lock().unwrap();
+        let h = &c.history;
+        let changes = match h.len() {
+            0 | 1 => Vec::new(),
+            n => crate::scan::snapshots::diff(&h[n - 2], &h[n - 1], "").into_iter().take(10).collect(),
+        };
+        ok_json(serde_json::json!({
+            "root": c.root,
+            "scans": h.iter().map(|s| serde_json::json!({ "date": crate::scan::snapshots::day(s.at), "total_size": s.total })).collect::<Vec<_>>(),
+            "changes_since_previous": changes,
+        }))
+    }
+
+    #[tool(description = "Search the scanned folder for identical files of 1 MB or more and wait for the result (reads file contents; can take minutes). Read-only: removing copies still needs request_trash and the user's confirmation.")]
+    async fn find_duplicates(&self) -> Result<CallToolResult, McpError> {
+        self.app.start_dupes().map_err(err)?;
+        while matches!(self.app.core.lock().unwrap().dupes, Dupes::Running(_)) {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        ok_json(dupes_json(&self.app))
+    }
+
+    #[tool(description = "Current duplicate search state: idle, running (progress) or done (largest groups, the copy kept by default). Read-only.")]
+    fn get_duplicates(&self) -> Result<CallToolResult, McpError> {
+        ok_json(dupes_json(&self.app))
+    }
+
+    #[tool(description = "Apps in the Applications folders not opened for 6 months or more (macOS), biggest first, with their leftover files in ~/Library. Apps without a known last-opened date are not listed. Read-only: to remove one, pass its path and leftovers to request_trash; the user always confirms apps.")]
+    async fn list_unused_apps(&self) -> Result<CallToolResult, McpError> {
+        self.app.load_apps();
+        for _ in 0..300 {
+            if !matches!(self.app.core.lock().unwrap().apps, crate::state::Apps::Loading) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        ok_json(apps_json(&self.app.core.lock().unwrap().apps))
+    }
+
+    #[tool(description = "Files the user may have forgotten, no scan needed: screenshots, screen recordings and downloads last used over a year ago, and installers in Downloads over 30 days old. Read-only: to remove some, pass their paths to request_trash; the user confirms.")]
+    async fn list_old_files(&self) -> Result<CallToolResult, McpError> {
+        self.app.load_old_files();
+        for _ in 0..300 {
+            if !matches!(self.app.core.lock().unwrap().old_files, crate::state::OldFiles::Loading) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        ok_json(old_json(&self.app.core.lock().unwrap().old_files))
+    }
+
+    #[tool(description = "Downloaded AI models (Ollama and the Hugging Face cache), biggest first: name, source, the bytes removing it frees, download time (Unix seconds) and the paths to trash (an Ollama model's manifest plus only the data no other model uses). Read-only: to remove one, pass its paths to request_trash; the user confirms.")]
+    async fn list_ai_models(&self) -> Result<CallToolResult, McpError> {
+        self.app.load_models();
+        for _ in 0..300 {
+            if !matches!(self.app.core.lock().unwrap().models, crate::state::Models::Loading) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // Cloned so the disk re-check in trash_paths runs without the core lock.
+        let list = match &self.app.core.lock().unwrap().models {
+            crate::state::Models::Done(l) => Some(l.clone()),
+            _ => None,
+        };
+        ok_json(list.map_or_else(|| serde_json::json!({ "state": "loading" }), |l| models_json(&l)))
+    }
+
     #[tool(description = "Folders scanned recently, newest first.")]
     fn list_recent_scans(&self) -> Result<CallToolResult, McpError> {
         ok_json(&self.app.core.lock().unwrap().settings.recent)
@@ -295,17 +448,46 @@ impl Tools {
     }
 
     #[tool(description = "PNG screenshot of the app window.")]
-    fn screenshot(&self) -> Result<CallToolResult, McpError> {
-        let png = capture().map_err(|e| McpError::internal_error(e, None))?;
+    async fn screenshot(&self) -> Result<CallToolResult, McpError> {
+        // ponytail: best effort; without the UI (tests) the capture below reports the error
+        let _ = self.app.send_input(Input::Reveal).await;
+        let (png, width) = capture().map_err(|e| McpError::internal_error(e, None))?;
+        self.app.shot_width.store(width, Relaxed);
         Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(png), "image/png")]))
     }
 
-    #[tool(description = "Switch the app to a screen so the user sees what you are talking about: home, disk_map (needs a scan; otherwise stays on home), cleanup, or system_tools (Cleanup with the system tools section first). Settings are not reachable. Returns the screen actually shown.")]
+    #[tool(description = "Click in the app window at a point of the latest screenshot image, without moving the real mouse. Refused while a confirmation is open or Settings is shown: those are the user's. Take a new screenshot to see the result.")]
+    async fn click(&self, Parameters(PointArgs { x, y }): Parameters<PointArgs>) -> Result<CallToolResult, McpError> {
+        self.input(Input::Click { x, y }).await
+    }
+
+    #[tool(description = "Move the app's pointer to a point of the latest screenshot image (shows hover states and tooltips), without moving the real mouse. Same limits as click.")]
+    async fn hover(&self, Parameters(PointArgs { x, y }): Parameters<PointArgs>) -> Result<CallToolResult, McpError> {
+        self.input(Input::Hover { x, y }).await
+    }
+
+    #[tool(description = "Scroll the area under a point of the latest screenshot image by dy screenshot pixels (positive = down). Same limits as click.")]
+    async fn scroll(&self, Parameters(ScrollArgs { x, y, dy }): Parameters<ScrollArgs>) -> Result<CallToolResult, McpError> {
+        self.input(Input::Scroll { x, y, dy }).await
+    }
+
+    #[tool(description = "Type text into the focused field of the app (click the field first). Same limits as click.")]
+    async fn type_text(&self, Parameters(TextArgs { text }): Parameters<TextArgs>) -> Result<CallToolResult, McpError> {
+        self.input(Input::Text(text)).await
+    }
+
+    #[tool(description = "Press one key in the app, e.g. enter, escape, tab, backspace, down, cmd-f. Same limits as click.")]
+    async fn key(&self, Parameters(KeyArgs { keys }): Parameters<KeyArgs>) -> Result<CallToolResult, McpError> {
+        self.input(Input::Key(keys)).await
+    }
+
+    #[tool(description = "Switch the app to a screen so the user sees what you are talking about: home, disk_map (needs a scan; otherwise stays on home), cleanup, free_up (the 'Free up space' planner), or system_tools (Cleanup with the system tools section first). Settings are not reachable. Returns the screen actually shown.")]
     fn show_screen(&self, Parameters(ScreenArgs { screen }): Parameters<ScreenArgs>) -> Result<CallToolResult, McpError> {
         match screen {
             ScreenName::Home => self.app.show(crate::state::Screen::Home),
             ScreenName::DiskMap => self.app.show(crate::state::Screen::DiskMap),
             ScreenName::Cleanup => self.app.show(crate::state::Screen::Cleanup),
+            ScreenName::FreeUp => self.app.show(crate::state::Screen::FreeUp),
             ScreenName::SystemTools => self.app.show_system_tools(),
         }
         ok_json(serde_json::json!({ "screen": format!("{:?}", self.app.core.lock().unwrap().screen) }))
@@ -317,7 +499,7 @@ impl Tools {
             self.app.check_system();
         }
         for _ in 0..125 {
-            if !self.app.core.lock().unwrap().system.values().any(|i| matches!(i.status, crate::cleaners::SystemStatus::Checking)) {
+            if !self.app.core.lock().unwrap().system.values().any(|i| matches!(i.status, crate::finders::cleaners::SystemStatus::Checking)) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -381,7 +563,14 @@ impl ServerHandler for Tools {
     }
 }
 
-fn capture() -> Result<Vec<u8>, String> {
+impl Tools {
+    async fn input(&self, i: Input) -> Result<CallToolResult, McpError> {
+        self.app.send_input(i).await.map_err(err)?;
+        ok_json(serde_json::json!({ "ok": true }))
+    }
+}
+
+fn capture() -> Result<(Vec<u8>, u32), String> {
     let pid = std::process::id();
     let window = xcap::Window::all()
         .map_err(|e| e.to_string())?
@@ -391,7 +580,7 @@ fn capture() -> Result<Vec<u8>, String> {
     let image = window.capture_image().map_err(|e| e.to_string())?;
     let mut png = Vec::new();
     image.write_to(&mut std::io::Cursor::new(&mut png), xcap::image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    Ok(png)
+    Ok((png, image.width()))
 }
 
 async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
@@ -452,7 +641,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            ["get_findings", "get_status", "get_tree", "list_recent_scans", "list_system_cleanups", "navigate", "refresh", "request_system_cleanup", "request_trash", "scan", "screenshot", "select", "show_screen", "top_items"]
+            ["click", "find_duplicates", "get_duplicates", "get_findings", "get_history", "get_status", "get_tree", "hover", "key", "list_ai_models", "list_old_files", "list_recent_scans", "list_system_cleanups", "list_unused_apps", "navigate", "refresh", "request_system_cleanup", "request_trash", "scan", "screenshot", "scroll", "select", "show_screen", "top_items", "type_text"]
         );
     }
 
@@ -471,7 +660,7 @@ mod tests {
         assert_eq!(tree["children"][0]["children"][0]["name"], "a.bin");
 
         let top = body(&t.top_items(Parameters(TopArgs { path: None, limit: Some(1) })).unwrap());
-        assert_eq!(top[0]["path"], f.base.join("cache").join("a.bin").to_string_lossy().as_ref());
+        assert_eq!(top[0]["path"], f.base.join("cache/a.bin").to_string_lossy().as_ref());
 
         let findings = body(&t.get_findings().unwrap());
         assert_eq!(findings[0]["rule_id"], "node_modules");
@@ -547,6 +736,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unused_apps_are_listed_read_only() {
+        let f = fixture().await;
+        let t = Tools { app: f.app.clone() };
+        let app = crate::finders::apps::App { path: "/Applications/Old.app".into(), name: "Old".into(), id: Some("com.old".into()), last_used: 1, own: 100, leftovers: vec![("/u/Library/Caches/com.old".into(), 20)], running: false, movable: true };
+        f.app.core.lock().unwrap().apps = crate::state::Apps::Done(vec![app]);
+        let r = body(&t.list_unused_apps().await.unwrap());
+        assert_eq!(r["state"], "done");
+        assert_eq!(r["apps"][0]["path"], "/Applications/Old.app");
+        assert_eq!(r["apps"][0]["size"], 120);
+        assert_eq!(r["apps"][0]["leftovers"][0]["size"], 20);
+    }
+
+    #[tokio::test]
+    async fn old_files_are_listed_read_only() {
+        let f = fixture().await;
+        let t = Tools { app: f.app.clone() };
+        let old = crate::finders::oldfiles::OldFile { path: "/u/Downloads/Zoom.pkg".into(), group: crate::finders::oldfiles::Group::Installer, last_used: 1, size: 90 };
+        f.app.core.lock().unwrap().old_files = crate::state::OldFiles::Done(vec![old]);
+        let r = body(&t.list_old_files().await.unwrap());
+        assert_eq!(r["state"], "done");
+        assert_eq!(r["files"][0]["group"], "installer");
+        assert_eq!(r["files"][0]["size"], 90);
+    }
+
+    #[tokio::test]
+    async fn ai_models_are_listed_read_only() {
+        let f = fixture().await;
+        let t = Tools { app: f.app.clone() };
+        let m = crate::finders::models::Model { name: "o/m".into(), source: crate::finders::models::Source::HfDataset, size: 90, downloaded: Some(5), paths: vec!["/u/hub/datasets--o--m".into()], root: "/u/hub".into() };
+        f.app.core.lock().unwrap().models = crate::state::Models::Done(vec![m]);
+        let r = body(&t.list_ai_models().await.unwrap());
+        assert_eq!(r["state"], "done");
+        assert_eq!(r["models"][0]["source"], "hf_dataset");
+        assert_eq!(r["models"][0]["size"], 90);
+        assert_eq!(r["models"][0]["paths"][0], "/u/hub/datasets--o--m");
+    }
+
+    #[tokio::test]
     async fn show_screen_switches_the_app() {
         let f = fixture().await;
         let t = Tools { app: f.app.clone() };
@@ -560,7 +787,15 @@ mod tests {
         assert_eq!(r["screen"], "Home"); // the map needs a scan
     }
 
-    #[cfg(unix)] // homebrew is not offered on Windows
+    #[tokio::test]
+    async fn click_is_refused_in_settings() {
+        let f = fixture().await;
+        let t = Tools { app: f.app.clone() };
+        f.app.show(crate::state::Screen::Settings);
+        assert!(t.click(Parameters(PointArgs { x: 10.0, y: 10.0 })).await.is_err());
+        assert!(f.app.inputs.is_empty(), "nothing reaches the window");
+    }
+
     #[tokio::test]
     async fn system_cleanups_list_and_confirmed_run() {
         let f = fixture().await;

@@ -109,7 +109,7 @@ pub fn findings(tree: &Node, root: &Path, rules: &Rules) -> Vec<Finding> {
     }
     let mut out = Vec::new();
     walk(tree, root, rules, &mut out);
-    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out.sort_by_key(|c| std::cmp::Reverse(c.size));
     out
 }
 

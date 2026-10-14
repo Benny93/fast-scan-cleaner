@@ -1,10 +1,11 @@
 use super::{AppView, loc};
+use super::a11y::Pressable as _;
 use crate::actions::Origin;
 use crate::rules::Safety;
 use crate::settings::{MapColors, MapOrder};
 use crate::scan::{self, Kind, Node};
 use crate::state::{Banner, Core, Screen};
-use crate::treemap::{self, Rect};
+use crate::scan::treemap::{self, Rect};
 use crate::{format, platform};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::alert::Alert;
@@ -30,7 +31,7 @@ const NEST: usize = 1000;
 
 /// 0 for a top-level block, 1 for one nested inside a folder block (see NEST).
 fn block_depth(id: usize) -> u8 {
-    u8::from(id % NEST != 0)
+    u8::from(!id.is_multiple_of(NEST))
 }
 
 fn hue_of(s: &str) -> f32 {
@@ -320,36 +321,57 @@ impl TableDelegate for FileRows {
     }
 }
 
+/// The Disk Map: treemap, file table, details and marked blocks.
+pub(crate) struct MapState {
+    /// Blocks right-clicked in the treemap (absolute paths), for trashing several at once.
+    pub(crate) marked: std::collections::BTreeSet<std::path::PathBuf>,
+    /// Disk Map shows a folder's "+ N small items" as their own map: (absolute folder, first child shown).
+    pub(crate) skip: Option<(std::path::PathBuf, usize)>,
+    pub(crate) focus: FocusHandle,
+    /// Treemap area size from the last frame; the layout uses it.
+    pub(crate) bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Same for the small map on the Home screen.
+    pub(crate) mini_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Disk Map shows the file table instead of the treemap.
+    pub(crate) show_list: bool,
+    pub(crate) details_open: bool,
+    pub(crate) file_table: Entity<gpui_kit::component::table::TableState<FileRows>>,
+    /// (zoomed folder, its size) the table was last filled for.
+    pub(crate) table_key: Option<(std::path::PathBuf, u64)>,
+    /// Folders visited in the Disk Map, for back/forward.
+    pub(crate) history: super::nav_history::History,
+}
+
 impl AppView {
     pub(super) fn disk_map(&mut self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
         if let Some(root) = &core.root {
-            self.history.visit(&root.join(&core.zoom));
+            self.map.history.visit(&root.join(&core.zoom));
         }
         // Marked blocks that were trashed or rescanned away are dropped.
-        self.map_marked.retain(|p| core.rel(p).and_then(|r| core.tree.as_ref()?.find(&r)).is_some());
+        self.map.marked.retain(|p| core.rel(p).and_then(|r| core.tree.as_ref()?.find(&r)).is_some());
         // "+ N small items" belongs to the folder it was opened in (absolute, so a new scan resets it).
-        if self.map_skip.as_ref().is_some_and(|(p, _)| Some(p.as_path()) != core.root.as_ref().map(|r| r.join(&core.zoom)).as_deref()) {
-            self.map_skip = None;
+        if self.map.skip.as_ref().is_some_and(|(p, _)| Some(p.as_path()) != core.root.as_ref().map(|r| r.join(&core.zoom)).as_deref()) {
+            self.map.skip = None;
         }
-        let main = if self.show_list { self.file_list(core, cx) } else { self.map_view(core, self.map_bounds.clone(), true, cx) };
+        let main = if self.map.show_list { self.file_list(core, cx) } else { self.map_view(core, self.map.bounds.clone(), true, cx) };
         let border = cx.theme().border;
         let tree = self.tree_pane(core, cx);
         div()
             .h_flex()
             .size_full()
-            .track_focus(&self.map_focus)
+            .track_focus(&self.map.focus)
             .key_context("DiskMap")
             // Resizing the folder tree: follow the pointer while its edge is dragged.
-            .when(self.tree_drag.is_some(), |d| {
+            .when(self.tree.drag.is_some(), |d| {
                 d.cursor_col_resize()
                     .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                        if let Some(grab) = this.tree_drag {
-                            this.tree_width = (f32::from(e.position.x) - grab).clamp(200., 700.);
+                        if let Some(grab) = this.tree.drag {
+                            this.tree.width = (f32::from(e.position.x) - grab).clamp(200., 700.);
                             cx.notify();
                         }
                     }))
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        this.tree_drag = None;
+                        this.tree.drag = None;
                         cx.notify();
                     }))
             })
@@ -365,9 +387,9 @@ impl AppView {
                     .child(self.toolbar(core, cx))
                     .children(self.guidance(core, cx))
                     .child(div().flex_1().min_h_0().p_2().child(main))
-                    .when(!self.show_list, |d| d.child(self.marked_bar(core, cx)).child(self.legend(core.settings.map_colors, core.settings.map_order, cx))),
+                    .when(!self.map.show_list, |d| d.child(self.marked_bar(core, cx)).child(self.legend(core.settings.map_colors, core.settings.map_order, cx))),
             )
-            .child(if self.details_open {
+            .child(if self.map.details_open {
                 self.details(core, cx)
             } else {
                 div()
@@ -375,8 +397,8 @@ impl AppView {
                     .border_l_1()
                     .border_color(border)
                     .p_1()
-                    .child(Button::new("details-open").ghost().small().icon(Lucide::PanelRightOpen).on_click(cx.listener(|this, _, _, cx| {
-                        this.details_open = true;
+                    .child(Button::new("details-open").accessibility_label(t!("a11y_details_open").to_string()).ghost().small().icon(Lucide::PanelRightOpen).on_click(cx.listener(|this, _, _, cx| {
+                        this.map.details_open = true;
                         cx.notify();
                     })))
                     .into_any_element()
@@ -395,11 +417,11 @@ impl AppView {
                 ButtonGroup::new("view")
                     .outline()
                     .small()
-                    .child(Button::new("view-map").icon(Lucide::LayoutGrid).label(t!("view_treemap").to_string()).selected(!self.show_list))
-                    .child(Button::new("view-list").icon(Lucide::List).label(t!("view_list").to_string()).selected(self.show_list))
+                    .child(Button::new("view-map").icon(Lucide::LayoutGrid).label(t!("view_treemap").to_string()).selected(!self.map.show_list))
+                    .child(Button::new("view-list").icon(Lucide::List).label(t!("view_list").to_string()).selected(self.map.show_list))
                     .on_click(cx.listener(|this, ix: &Vec<usize>, _, cx| {
                         if let Some(i) = ix.first() {
-                            this.show_list = *i == 1;
+                            this.map.show_list = *i == 1;
                             cx.notify();
                         }
                     })),
@@ -412,7 +434,7 @@ impl AppView {
                     .label(t!("nav_refresh").to_string())
                     .loading(core.busy)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let _ = this.app.refresh(None);
+                        drop(this.app.refresh(None));
                         cx.notify();
                     })),
             )
@@ -423,7 +445,7 @@ impl AppView {
     fn marked_bar(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme();
         let row = || div().h_flex().h(px(44.)).gap_3().mx_2().mb_2().px_3().rounded_lg().border_1();
-        if self.map_marked.is_empty() {
+        if self.map.marked.is_empty() {
             return row()
                 .border_color(t.border)
                 .text_sm()
@@ -432,7 +454,7 @@ impl AppView {
                 .child(div().flex_1().min_w_0().truncate().child(t!("map_select_hint").to_string()))
                 .into_any_element();
         }
-        let paths = top_level(&self.map_marked);
+        let paths = top_level(&self.map.marked);
         let size: u64 = paths.iter().filter_map(|p| core.tree.as_ref()?.find(&core.rel(p)?)).map(|n| n.size).sum();
         row()
             .border_color(t.primary)
@@ -440,7 +462,7 @@ impl AppView {
             .child(Icon::new(Lucide::SquareCheck).text_color(t.primary))
             .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(t!("cleanup_selected", count = paths.len().to_string(), size = format::size(size, &loc())).to_string()))
             .child(Button::new("clear-marked").outline().small().label(t!("cleanup_clear_selection").to_string()).on_click(cx.listener(|this, _, _, cx| {
-                this.map_marked.clear();
+                this.map.marked.clear();
                 cx.notify();
             })))
             .child(Button::new("trash-marked").danger().small().icon(Lucide::Trash).label(t!("cleanup_trash_selected").to_string()).on_click(cx.listener(|this, _, _, cx| this.trash_marked(cx))))
@@ -449,8 +471,8 @@ impl AppView {
 
     /// Asks to move the marked blocks to the Trash (the usual confirm dialog); they leave the map once done.
     pub(super) fn trash_marked(&mut self, cx: &mut Context<Self>) {
-        if !self.map_marked.is_empty() {
-            let _ = self.app.request_trash(top_level(&self.map_marked), None, Origin::User);
+        if !self.map.marked.is_empty() {
+            let _ = self.app.request_trash(top_level(&self.map.marked), None, Origin::User);
             cx.notify();
         }
     }
@@ -545,7 +567,7 @@ impl AppView {
             crumbs.push((c.as_os_str().to_string_lossy().into_owned(), acc.clone()));
         }
         // Looking at a folder's small items: one more step, after the folder itself.
-        let small = self.map_skip.as_ref().and_then(|(_, skip)| {
+        let small = self.map.skip.as_ref().and_then(|(_, skip)| {
             let n = core.tree.as_ref()?.find(&core.zoom)?.children.len().saturating_sub(*skip);
             Some(t!("map_small_items", count = format::count(n as u64, &loc())).to_string())
         });
@@ -554,7 +576,7 @@ impl AppView {
         }
         Breadcrumb::new().children(shorten_crumbs(crumbs).into_iter().map(|(label, path)| {
             BreadcrumbItem::new(label).on_click(cx.listener(move |this, _, _, cx| {
-                this.map_skip = None;
+                this.map.skip = None;
                 let _ = this.app.navigate(&path);
                 cx.notify();
             }))
@@ -570,6 +592,7 @@ impl AppView {
                     .px_3()
                     .pt_2()
                     .cursor_pointer()
+                    .a11y_press(&self.focus_for("guidance", cx), t!("banner_found", size = format::size(b, &loc())).to_string(), cx.theme().ring)
                     .child(Alert::success("guidance", format!("{} →", t!("banner_found", size = format::size(b, &loc())))).icon(Lucide::Sparkles))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.app.show(Screen::Cleanup);
@@ -600,7 +623,7 @@ impl AppView {
         };
         // Showing a folder's "+ N small items" as their own map.
         let zoom_abs = root.join(&zoom_rel);
-        let skip = self.map_skip.as_ref().filter(|(p, _)| interactive && *p == zoom_abs).map_or(0, |(_, s)| *s);
+        let skip = self.map.skip.as_ref().filter(|(p, _)| interactive && *p == zoom_abs).map_or(0, |(_, s)| *s);
         let removable = if mode == MapColors::Advice { removable_bytes(core) } else { HashMap::new() };
         let inherited = zoom_abs.ancestors().take_while(|p| p.starts_with(root)).find_map(|p| self.app.deps.rules.matching(p)).map(|r| r.safety);
         let b = cell.get();
@@ -650,6 +673,9 @@ impl AppView {
         let (moved, left) = (self.hover_tip.clone(), self.hover_tip.clone());
         div()
             .id("map-area")
+            .role(Role::Group)
+            .aria_label(super::a11y::map_summary_of(core))
+            .aria_description(t!("a11y_map_hint").to_string())
             .relative()
             .size_full()
             .when(interactive, |d| {
@@ -697,7 +723,7 @@ impl AppView {
                     this.hover_tip.update(cx, |h, cx| h.clear(cx));
                     // Opening a folder's group from a parent map: open the folder first.
                     let _ = this.app.navigate(&folder_abs);
-                    this.map_skip = Some((folder_abs.clone(), skip));
+                    this.map.skip = Some((folder_abs.clone(), skip));
                     cx.notify();
                 }))
             })
@@ -730,7 +756,7 @@ impl AppView {
         let (core, root, removable, mode, interactive) = (ctx.core, ctx.root, ctx.removable, ctx.mode, ctx.interactive);
         let abs = root.join(&rel);
         let selected = interactive && core.selected.as_ref() == Some(&rel);
-        let marked = interactive && self.map_marked.contains(&abs);
+        let marked = interactive && self.map.marked.contains(&abs);
         let rule = self.app.deps.rules.matching(&abs);
         let advice = rule.map(|r| r.safety).or(inherited);
         let share = if advice == Some(Safety::Safe) {
@@ -877,7 +903,7 @@ impl AppView {
             return div().into_any_element();
         };
         let key = (root.join(&core.zoom), zoom.size);
-        if self.table_key.as_ref() != Some(&key) {
+        if self.map.table_key.as_ref() != Some(&key) {
             let rows: Vec<FileRow> = scan::largest_files(zoom, &key.0, 200)
                 .into_iter()
                 .map(|(path, size)| FileRow {
@@ -888,14 +914,14 @@ impl AppView {
                     path,
                 })
                 .collect();
-            self.file_table.update(cx, |t, cx| {
+            self.map.file_table.update(cx, |t, cx| {
                 t.delegate_mut().rows = rows;
                 t.refresh(cx);
                 t.clear_selection(cx);
             });
-            self.table_key = Some(key);
+            self.map.table_key = Some(key);
         }
-        DataTable::new(&self.file_table).stripe(true).into_any_element()
+        DataTable::new(&self.map.file_table).stripe(true).into_any_element()
     }
 
     fn details(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
@@ -911,13 +937,13 @@ impl AppView {
         let abs = root.join(&rel);
         let rule = self.app.deps.rules.matching(&abs).cloned();
         let (reveal_path, trash_path) = (abs.clone(), abs.clone());
-        let title = if rel.as_os_str().is_empty() { root.display().to_string() } else { node.name.to_string() };
+        let title = details_title(&rel, root, &node.name);
         let folder = abs.parent().map(|p| p.display().to_string()).unwrap_or_default();
         div()
             .id("details")
             .v_flex()
-            .w(relative(0.24))
-            .min_w(px(220.))
+            .w(relative(0.27))
+            .min_w(px(240.))
             .max_w(px(340.))
             .h_full()
             .flex_shrink_0()
@@ -929,15 +955,15 @@ impl AppView {
             .child(
                 div()
                     .h_flex()
-                    .gap_2()
+                    .justify_between()
                     .child(Icon::new(if node.kind == Kind::Dir { Lucide::Folder } else { Lucide::File }).text_color(muted))
-                    // Long names wrap onto a second line instead of ending in "…" after a few letters.
-                    .child(div().flex_1().min_w_0().text_lg().font_weight(FontWeight::BOLD).line_clamp(2).child(breakable(&title)))
-                    .child(Button::new("details-close").ghost().small().icon(Lucide::PanelRightClose).on_click(cx.listener(|this, _, _, cx| {
-                        this.details_open = false;
+                    .child(Button::new("details-close").accessibility_label(t!("a11y_details_close").to_string()).ghost().small().icon(Lucide::PanelRightClose).on_click(cx.listener(|this, _, _, cx| {
+                        this.map.details_open = false;
                         cx.notify();
                     }))),
             )
+            // The name gets the full panel width; long ones wrap onto a second line at separators.
+            .child(div().text_lg().font_weight(FontWeight::BOLD).line_clamp(2).child(breakable(&title)))
             .child(div().text_2xl().font_weight(FontWeight::BOLD).child(format::size(node.size, &loc())))
             // Label above the path: side by side, a narrow panel broke the path after every few letters.
             .child(div().v_flex().gap_1().child(div().text_xs().text_color(muted).child(t!("col_folder").to_string())).child(div().text_sm().child(breakable(&folder))))
@@ -957,9 +983,25 @@ impl AppView {
     }
 }
 
+/// The panel's title: the item's name, also for the scanned folder itself (its full path wrapped
+/// and got cut off; the "Folder" line shows where it is). A drive root has no name: its path.
+fn details_title(rel: &Path, root: &Path, name: &str) -> String {
+    let name = if rel.as_os_str().is_empty() { root.file_name().map(|n| n.to_string_lossy().into_owned()) } else { Some(name.to_string()) };
+    name.filter(|n| !n.is_empty()).unwrap_or_else(|| root.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn details_title_is_a_name_even_for_the_scanned_folder() {
+        let root = Path::new("/Users/Shared/FastScanCleaner-Demo");
+        assert_eq!(details_title(Path::new(""), root, "FastScanCleaner-Demo"), "FastScanCleaner-Demo");
+        assert_eq!(details_title(Path::new("Videos"), root, "Videos"), "Videos");
+        assert_eq!(details_title(Path::new(""), Path::new("/"), ""), "/", "a drive root has no name");
+    }
+
 
     #[::core::prelude::v1::test]
     fn long_breadcrumbs_keep_first_and_last_three() {

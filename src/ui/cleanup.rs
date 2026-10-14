@@ -1,10 +1,14 @@
 use super::{AppView, card, heading, loc};
+use super::a11y::{Pressable as _, item_label};
 use crate::actions::Origin;
-use crate::cleaners::{AUTOMATION_DENIED, Cleaner, Estimate, GIT_REPO_LIMIT, NOT_INSTALLED, SystemStatus};
+use crate::finders::cleaners::{AUTOMATION_DENIED, Cleaner, Estimate, GIT_REPO_LIMIT, NOT_INSTALLED, SystemStatus};
 use crate::format;
 use crate::platform;
 use crate::rules::{self, Finding, Safety};
-use crate::state::{Core, Screen};
+use crate::finders::dupes::{Group, Removal, pick_keep};
+use crate::state::{Core, Dupes, Screen};
+use gpui_kit::component::progress::Progress;
+use std::sync::atomic::Ordering::Relaxed;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -33,6 +37,25 @@ pub(super) fn estimate_text(e: Estimate) -> String {
 }
 
 const LINUX_CMD: &str = "sudo apt clean && sudo journalctl --vacuum-size=200M";
+
+/// What is ticked and expanded on the Cleanup screen and its cards.
+pub(crate) struct CleanupState {
+    /// Findings ticked on the Cleanup screen.
+    pub(crate) selected: std::collections::BTreeSet<std::path::PathBuf>,
+    /// Expanded groups on the Cleanup screen ("safety:rule" for findings, "git:<kind>" and "git:<item id>").
+    pub(crate) open: std::collections::BTreeSet<String>,
+    /// Git branches / worktrees ticked on the Cleanup screen: (system item id, branch name or path).
+    pub(crate) git_selected: std::collections::BTreeSet<(String, String)>,
+    /// Copies the user chose to keep (at most one per duplicate group).
+    pub(crate) dupe_keep: std::collections::HashSet<std::path::PathBuf>,
+    pub(crate) dupes_shown: usize,
+    pub(crate) apps_ticked: std::collections::HashSet<std::path::PathBuf>,
+    pub(crate) apps_open: std::collections::HashSet<std::path::PathBuf>,
+    pub(crate) models_ticked: std::collections::HashSet<std::path::PathBuf>,
+    pub(crate) old_ticked: std::collections::HashSet<std::path::PathBuf>,
+    pub(crate) old_open: std::collections::HashSet<crate::finders::oldfiles::Group>,
+    pub(crate) old_shown: usize,
+}
 
 impl AppView {
     fn system_card(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
@@ -69,7 +92,7 @@ impl AppView {
                     .gap_3()
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(t!("group_system").to_string()))
                     .child(div().flex_1())
-                    .child(Button::new("sys-refresh").ghost().small().icon(Lucide::RefreshCw).tooltip(t!("nav_refresh").to_string()).on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("sys-refresh").accessibility_label(t!("nav_refresh").to_string()).ghost().small().icon(Lucide::RefreshCw).tooltip(t!("nav_refresh").to_string()).on_click(cx.listener(|this, _, _, cx| {
                         this.app.check_system();
                         cx.notify();
                     }))),
@@ -149,8 +172,8 @@ impl AppView {
             repos.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then(a.1.cmp(&b.1)));
             let entries: Vec<(String, String)> = repos.iter().flat_map(|(id, _, d, _)| d.iter().map(move |e| (id.clone(), e.clone()))).collect();
             let open_key = format!("git:{}", cleaner.id());
-            let open = self.cleanup_open.contains(&open_key);
-            let all = !entries.is_empty() && entries.iter().all(|e| self.git_selected.contains(e));
+            let open = self.cleanup.open.contains(&open_key);
+            let all = !entries.is_empty() && entries.iter().all(|e| self.cleanup.git_selected.contains(e));
             let title = t!(key, count = entries.len(), repos = repos.len()).to_string();
             body.push(self.group_header(("git-kind", k), &open_key, open, Some(all), Lucide::GitBranch, title, None, None, entries.clone(), cx));
             if !open {
@@ -158,9 +181,9 @@ impl AppView {
             }
             for (r, (id, repo, detail, running)) in repos.into_iter().enumerate() {
                 let repo_key = format!("git:{id}");
-                let repo_open = self.cleanup_open.contains(&repo_key);
+                let repo_open = self.cleanup.open.contains(&repo_key);
                 let mine: Vec<(String, String)> = detail.iter().map(|e| (id.clone(), e.clone())).collect();
-                let repo_all = !mine.is_empty() && mine.iter().all(|e| self.git_selected.contains(e));
+                let repo_all = !mine.is_empty() && mine.iter().all(|e| self.cleanup.git_selected.contains(e));
                 let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let sub = if running { t!("sys_running").to_string() } else { t!("sys_count", count = detail.len().to_string()).to_string() };
                 body.push(
@@ -172,7 +195,7 @@ impl AppView {
                 if repo_open {
                     for (e, entry) in detail.into_iter().enumerate() {
                         let pick = (id.clone(), entry.clone());
-                        let ticked = self.git_selected.contains(&pick);
+                        let ticked = self.cleanup.git_selected.contains(&pick);
                         let label = if cleaner == Cleaner::GitWorktrees { Path::new(&entry).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(entry.clone()) } else { entry.clone() };
                         body.push(
                             div()
@@ -181,11 +204,11 @@ impl AppView {
                                 .gap_3()
                                 .pl_16()
                                 .py_1()
-                                .child(Checkbox::new(("git-pick", (k * 1000 + r) * 1000 + e)).checked(ticked).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                .child(Checkbox::new(("git-pick", (k * 1000 + r) * 1000 + e)).accessibility_label(label.clone()).checked(ticked).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                     if *checked {
-                                        this.git_selected.insert(pick.clone());
+                                        this.cleanup.git_selected.insert(pick.clone());
                                     } else {
-                                        this.git_selected.remove(&pick);
+                                        this.cleanup.git_selected.remove(&pick);
                                     }
                                     cx.notify();
                                 })))
@@ -205,7 +228,7 @@ impl AppView {
                     .child(Icon::new(Lucide::GitBranch).text_color(muted))
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(t!("sys_git_name").to_string()))
                     .child(div().flex_1())
-                    .child(Button::new("git-refresh").ghost().small().icon(Lucide::RefreshCw).tooltip(t!("nav_refresh").to_string()).on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("git-refresh").accessibility_label(t!("nav_refresh").to_string()).ghost().small().icon(Lucide::RefreshCw).tooltip(t!("nav_refresh").to_string()).on_click(cx.listener(|this, _, _, cx| {
                         this.app.check_system();
                         cx.notify();
                     }))),
@@ -228,21 +251,22 @@ impl AppView {
             .gap_3()
             .py_2()
             .cursor_pointer()
+            .a11y_press(&self.focus_for(format!("group-{key}"), cx), title.clone(), cx.theme().ring)
             .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.cleanup_open.remove(&toggle) {
-                    this.cleanup_open.insert(toggle.clone());
+                if !this.cleanup.open.remove(&toggle) {
+                    this.cleanup.open.insert(toggle.clone());
                 }
                 cx.notify();
             }))
             .child(Icon::new(if open { Lucide::ChevronDown } else { Lucide::ChevronRight }).size_4().text_color(muted))
             .children(checked.map(|all| {
-                Checkbox::new((id.0, id.1 + 500_000)).checked(all).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                Checkbox::new((id.0, id.1 + 500_000)).accessibility_label(title.clone()).checked(all).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                     cx.stop_propagation();
                     for p in &picks {
                         if *checked {
-                            this.git_selected.insert(p.clone());
+                            this.cleanup.git_selected.insert(p.clone());
                         } else {
-                            this.git_selected.remove(p);
+                            this.cleanup.git_selected.remove(p);
                         }
                     }
                     cx.notify();
@@ -297,12 +321,13 @@ impl AppView {
                     .flex_1()
                     .min_w_0()
                     .gap_1()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(name))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(name.clone()))
                     .child(div().text_sm().text_color(muted).child(advice))
                     .child(div().text_sm().when(failed, |d| d.text_color(danger)).child(status)),
             )
             .child(
                 Button::new(("sys-run", ix))
+                    .accessibility_label(format!("{} – {name}", t!("sys_run")))
                     .outline()
                     .small()
                     .loading(busy)
@@ -326,7 +351,7 @@ impl AppView {
         let selected: BTreeSet<PathBuf> = core
             .findings
             .iter()
-            .filter(|f| f.safety != Safety::Keep && self.cleanup_selected.contains(&f.path))
+            .filter(|f| f.safety != Safety::Keep && self.cleanup.selected.contains(&f.path))
             .map(|f| f.path.clone())
             .collect();
         let selected_size: u64 = core.findings.iter().filter(|f| selected.contains(&f.path)).map(|f| f.size).sum();
@@ -384,12 +409,12 @@ impl AppView {
                         continue;
                     }
                     let key = format!("{group}:{}", members[0].rule_id);
-                    let open = self.cleanup_open.contains(&key);
+                    let open = self.cleanup.open.contains(&key);
                     rows.push(self.finding_group(base, &key, open, &members, safety, &selected, cx));
                     if open {
                         // A long group shows its biggest entries first; hundreds of rows at once make scrolling stutter.
                         let all_key = format!("{key}:all");
-                        let shown = if self.cleanup_open.contains(&all_key) { members.len() } else { members.len().min(GROUP_PREVIEW) };
+                        let shown = if self.cleanup.open.contains(&all_key) { members.len() } else { members.len().min(GROUP_PREVIEW) };
                         rows.extend(members[..shown].iter().enumerate().map(|(i, f)| div().pl_8().child(self.cleanup_row(base + i + 1, f, safety, selected.contains(&f.path), true, cx)).into_any_element()));
                         if shown < members.len() {
                             let rest = members.len() - shown;
@@ -398,7 +423,7 @@ impl AppView {
                                     .pl_8()
                                     .py_2()
                                     .child(Button::new(("show-more", base)).ghost().small().icon(Lucide::ChevronDown).label(t!("cleanup_show_more", count = rest).to_string()).on_click(cx.listener(move |this, _, _, cx| {
-                                        this.cleanup_open.insert(all_key.clone());
+                                        this.cleanup.open.insert(all_key.clone());
                                         cx.notify();
                                     })))
                                     .into_any_element(),
@@ -414,12 +439,12 @@ impl AppView {
                                 .h_flex()
                                 .gap_3()
                                 .when(safety != Safety::Keep, |d| {
-                                    d.child(Checkbox::new(("pick-all", group)).checked(all_ticked).tooltip(t!("cleanup_select_all").to_string()).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    d.child(Checkbox::new(("pick-all", group)).accessibility_label(t!("cleanup_select_all").to_string()).checked(all_ticked).tooltip(t!("cleanup_select_all").to_string()).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                         for p in &group_paths {
                                             if *checked {
-                                                this.cleanup_selected.insert(p.clone());
+                                                this.cleanup.selected.insert(p.clone());
                                             } else {
-                                                this.cleanup_selected.remove(p);
+                                                this.cleanup.selected.remove(p);
                                             }
                                         }
                                         cx.notify();
@@ -442,6 +467,18 @@ impl AppView {
             v
         };
         let mut content = content;
+        if core.tree.is_some() {
+            content.push(self.dupes_card(core, cx));
+        }
+        if let Some(apps) = self.apps_card(core, cx) {
+            content.push(apps);
+        }
+        if let Some(old) = self.old_files_card(core, cx) {
+            content.push(old);
+        }
+        if let Some(models) = self.models_card(core, cx) {
+            content.push(models);
+        }
         let system = self.system_card(core, cx);
         let git = self.git_card(core, cx);
         if core.system_first {
@@ -453,7 +490,7 @@ impl AppView {
         }
         // Git picks that still match the last check, grouped per repository item.
         let mut git_picks: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for (id, entry) in &self.git_selected {
+        for (id, entry) in &self.cleanup.git_selected {
             if core.system.get(id).is_some_and(|i| matches!(&i.status, SystemStatus::Ready { detail, .. } if detail.contains(entry))) {
                 git_picks.entry(id.clone()).or_default().push(entry.clone());
             }
@@ -485,7 +522,7 @@ impl AppView {
                         .bg(bg)
                         .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(t!("cleanup_selected", count = picked.len().to_string(), size = format::size(selected_size, &l)).to_string()))
                         .child(Button::new("clear-picked").outline().label(t!("cleanup_clear_selection").to_string()).on_click(cx.listener(|this, _, _, cx| {
-                            this.cleanup_selected.clear();
+                            this.cleanup.selected.clear();
                             cx.notify();
                         })))
                         .child(Button::new("trash-picked").danger().icon(Lucide::Trash).label(t!("cleanup_trash_selected").to_string()).on_click(cx.listener(move |this, _, _, cx| {
@@ -508,13 +545,13 @@ impl AppView {
                         .child(Icon::new(Lucide::GitBranch))
                         .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(t!("git_selected_bar", branches = branches, worktrees = worktrees).to_string()))
                         .child(Button::new("git-clear").outline().label(t!("cleanup_clear_selection").to_string()).on_click(cx.listener(|this, _, _, cx| {
-                            this.git_selected.clear();
+                            this.cleanup.git_selected.clear();
                             cx.notify();
                         })))
                         .child(Button::new("git-delete").danger().icon(Lucide::Trash).label(t!("git_delete_selected").to_string()).on_click(cx.listener(move |this, _, _, cx| {
                             let picks = git_picks.iter().map(|(id, e)| (id.clone(), Some(e.clone()))).collect();
                             if this.app.request_system_batch(picks, None, Origin::User).is_ok() {
-                                this.git_selected.clear();
+                                this.cleanup.git_selected.clear();
                             }
                             cx.notify();
                         }))),
@@ -540,21 +577,22 @@ impl AppView {
             .border_b_1()
             .border_color(border)
             .cursor_pointer()
+            .a11y_press(&self.focus_for(format!("finding-{key}"), cx), item_label(&group_title(members), &format::size(total, &loc())), cx.theme().ring)
             .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.cleanup_open.remove(&toggle) {
-                    this.cleanup_open.insert(toggle.clone());
+                if !this.cleanup.open.remove(&toggle) {
+                    this.cleanup.open.insert(toggle.clone());
                 }
                 cx.notify();
             }))
             .child(Icon::new(if open { Lucide::ChevronDown } else { Lucide::ChevronRight }).size_4().text_color(muted))
             .when(safety != Safety::Keep, |d| {
-                d.child(Checkbox::new(("pick-group", id)).checked(all).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                d.child(Checkbox::new(("pick-group", id)).accessibility_label(item_label(&group_title(members), &format::size(total, &loc()))).checked(all).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                     cx.stop_propagation();
                     for p in &picks {
                         if *checked {
-                            this.cleanup_selected.insert(p.clone());
+                            this.cleanup.selected.insert(p.clone());
                         } else {
-                            this.cleanup_selected.remove(p);
+                            this.cleanup.selected.remove(p);
                         }
                     }
                     cx.notify();
@@ -572,7 +610,7 @@ impl AppView {
             )
             .child(div().w(px(90.)).text_right().font_weight(FontWeight::SEMIBOLD).child(format::size(total, &loc())))
             .when(safety != Safety::Keep, |d| {
-                d.child(Button::new(("trash-group", id)).ghost().small().icon(Lucide::Trash).tooltip(t!("cleanup_trash_group").to_string()).on_click(cx.listener(move |this, _, _, cx| {
+                d.child(Button::new(("trash-group", id)).accessibility_label(t!("cleanup_trash_group").to_string()).ghost().small().icon(Lucide::Trash).tooltip(t!("cleanup_trash_group").to_string()).on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     let _ = this.app.request_trash(trash.clone(), None, Origin::User);
                     cx.notify();
@@ -604,11 +642,11 @@ impl AppView {
             .border_b_1()
             .border_color(border)
             .when(safety != Safety::Keep, |d| {
-                d.child(Checkbox::new(("pick", id)).checked(ticked).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                d.child(Checkbox::new(("pick", id)).accessibility_label(name.clone()).checked(ticked).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                     if *checked {
-                        this.cleanup_selected.insert(pick.clone());
+                        this.cleanup.selected.insert(pick.clone());
                     } else {
-                        this.cleanup_selected.remove(&pick);
+                        this.cleanup.selected.remove(&pick);
                     }
                     cx.notify();
                 })))
@@ -625,12 +663,12 @@ impl AppView {
                     .when(!in_group, |d| d.child(div().text_sm().child(t!(&f.message).to_string()))),
             )
             .child(div().w(px(90.)).text_right().font_weight(FontWeight::SEMIBOLD).child(format::size(f.size, &loc())))
-            .child(Button::new(("show", id)).ghost().small().icon(Lucide::Map).tooltip(t!("cleanup_show").to_string()).on_click(cx.listener(move |this, _, _, cx| {
+            .child(Button::new(("show", id)).accessibility_label(t!("cleanup_show").to_string()).ghost().small().icon(Lucide::Map).tooltip(t!("cleanup_show").to_string()).on_click(cx.listener(move |this, _, _, cx| {
                 let _ = this.app.navigate(&show);
                 cx.notify();
             })))
             .when(safety != Safety::Keep, |d| {
-                d.child(Button::new(("trash", id)).ghost().small().icon(Lucide::Trash).tooltip(t!("details_trash").to_string()).on_click(cx.listener(move |this, _, _, cx| {
+                d.child(Button::new(("trash", id)).accessibility_label(t!("details_trash").to_string()).ghost().small().icon(Lucide::Trash).tooltip(t!("details_trash").to_string()).on_click(cx.listener(move |this, _, _, cx| {
                     let _ = this.app.request_trash(vec![trash.clone()], None, Origin::User);
                     cx.notify();
                 })))
@@ -643,7 +681,7 @@ impl AppView {
 const GROUP_PREVIEW: usize = 50;
 
 /// Findings grouped by the rule that found them, biggest group first (items keep their order).
-fn group_by_rule<'a>(items: &[&'a Finding]) -> Vec<Vec<&'a Finding>> {
+pub(super) fn group_by_rule<'a>(items: &[&'a Finding]) -> Vec<Vec<&'a Finding>> {
     let mut groups: Vec<Vec<&Finding>> = Vec::new();
     for f in items {
         match groups.iter_mut().find(|g| g[0].rule_id == f.rule_id) {
@@ -656,7 +694,7 @@ fn group_by_rule<'a>(items: &[&'a Finding]) -> Vec<Vec<&'a Finding>> {
 }
 
 /// "node_modules" when all items share a name, else the first sentence of the advice.
-fn group_title(members: &[&Finding]) -> String {
+pub(super) fn group_title(members: &[&Finding]) -> String {
     let name = |f: &Finding| f.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let first = name(members[0]);
     if members.iter().all(|f| name(f) == first) {
@@ -664,6 +702,102 @@ fn group_title(members: &[&Finding]) -> String {
     }
     let message = t!(&members[0].message).to_string();
     message.split_terminator(['.', '。']).next().unwrap_or(&message).trim().to_string()
+}
+
+impl AppView {
+    /// The kept copy of a group: the user's pick if it is still in the group, else the default.
+    fn kept<'a>(&self, g: &'a Group, core: &Core) -> &'a Path {
+        &g.copies[pick_keep(g, &self.cleanup.dupe_keep, &self.app.deps.home, &finding_dirs(core))].path
+    }
+
+    /// Every copy that would be removed, with the copy that stays.
+    pub(super) fn dupe_removals(&self, core: &Core) -> Vec<Removal> {
+        let Dupes::Done(groups) = &core.dupes else { return Vec::new() };
+        crate::finders::dupes::removals(groups, &self.cleanup.dupe_keep, &self.app.deps.home, &finding_dirs(core))
+    }
+
+    fn dupes_card(&self, core: &Core, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme();
+        let (muted, border, bg, success) = (t.muted_foreground, t.border, t.background, t.success);
+        let l = loc();
+        let title = div().text_lg().font_weight(FontWeight::SEMIBOLD).child(t!("dupes_title").to_string());
+        let find = |label: String, cx: &mut Context<Self>| Button::new("dupes-find").outline().icon(Lucide::Search).label(label).on_click(cx.listener(|this, _, _, cx| {
+            this.cleanup.dupe_keep.clear();
+            this.cleanup.dupes_shown = 50;
+            let _ = this.app.start_dupes();
+            cx.notify();
+        }));
+        let body = match &core.dupes {
+            Dupes::Idle => div().v_flex().gap_3().child(div().text_sm().text_color(muted).child(t!("dupes_intro").to_string())).child(div().h_flex().child(find(t!("dupes_find").to_string(), cx))),
+            Dupes::Running(p) => {
+                let (done, total) = (p.files_done.load(Relaxed), p.files_total.load(Relaxed).max(1));
+                div().v_flex().gap_2()
+                    .child(Progress::new("dupes-progress").value(done as f32 / total as f32 * 100.))
+                    .child(div().h_flex().gap_3().child(div().flex_1().text_sm().text_color(muted).child(t!("dupes_progress", done = format::count(done, &l), total = format::count(total, &l), read = format::size(p.bytes_read.load(Relaxed), &l)).to_string()))
+                        .child(Button::new("dupes-cancel").ghost().small().label(t!("confirm_cancel").to_string()).on_click(cx.listener(|this, _, _, cx| {
+                            this.app.cancel_dupes();
+                            cx.notify();
+                        }))))
+            }
+            Dupes::Done(groups) if groups.is_empty() => div().v_flex().gap_3().child(div().text_sm().child(t!("dupes_none").to_string())).child(div().h_flex().child(find(t!("dupes_again").to_string(), cx))),
+            Dupes::Done(groups) => {
+                let removals = self.dupe_removals(core);
+                let freed: u64 = removals.iter().map(|r| r.size).sum();
+                let mut list = div().v_flex().gap_3();
+                for (gi, g) in groups.iter().take(self.cleanup.dupes_shown).enumerate() {
+                    let kept = self.kept(g, core).to_path_buf();
+                    let name = g.copies[0].path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let others: Vec<PathBuf> = g.copies.iter().map(|c| c.path.clone()).collect();
+                    list = list.child(
+                        div().v_flex().gap_1()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(t!("dupes_group", name = name, count = g.copies.len().to_string(), size = format::size(g.wasted(), &l)).to_string()))
+                            .children(g.copies.iter().enumerate().map(|(ci, c)| {
+                                let is_kept = c.path == kept;
+                                let (others, path) = (others.clone(), c.path.clone());
+                                div().h_flex().gap_3().pl_4()
+                                    .child(div().flex_1().min_w_0().truncate().text_sm().text_color(if is_kept { success } else { muted }).child(c.path.parent().map(|p| p.display().to_string()).unwrap_or_default()))
+                                    .child(if is_kept {
+                                        Tag::success().child(t!("dupes_keep").to_string()).into_any_element()
+                                    } else {
+                                        Button::new(SharedString::from(format!("dupe-keep-{gi}-{ci}"))).ghost().xsmall().label(t!("dupes_keep_this").to_string()).on_click(cx.listener(move |this, _, _, cx| {
+                                            // One pick per group: drop the group's earlier pick.
+                                            for o in &others {
+                                                this.cleanup.dupe_keep.remove(o);
+                                            }
+                                            this.cleanup.dupe_keep.insert(path.clone());
+                                            cx.notify();
+                                        })).into_any_element()
+                                    })
+                            })),
+                    );
+                }
+                let more = groups.len().saturating_sub(self.cleanup.dupes_shown);
+                let any = !removals.is_empty();
+                div().v_flex().gap_3()
+                    .child(div().h_flex().gap_3().child(div().flex_1().text_sm().child(t!("dupes_summary", groups = groups.len().to_string(), size = format::size(freed, &l)).to_string())).child(find(t!("dupes_again").to_string(), cx)))
+                    .child(list)
+                    .when(more > 0, |d| d.child(div().child(Button::new("dupes-more").ghost().small().label(t!("cleanup_show_more", count = more.min(50).to_string()).to_string()).on_click(cx.listener(|this, _, _, cx| {
+                        this.cleanup.dupes_shown += 50;
+                        cx.notify();
+                    })))))
+                    .child(div().h_flex().justify_end().child(Button::new("dupes-trash").danger().icon(Lucide::Trash).label(t!("dupes_trash", size = format::size(freed, &l)).to_string()).disabled(!any || core.pending.is_some()).on_click(cx.listener(move |this, _, _, cx| {
+                        let removals = this.dupe_removals(&this.app.core.lock().unwrap());
+                        // Re-checked on the click: the kept copy must still exist, the copy be unchanged.
+                        let paths: Vec<PathBuf> = removals.into_iter().filter(Removal::still_safe).map(|r| r.path).collect();
+                        if !paths.is_empty() {
+                            let _ = this.app.request_trash(paths, None, Origin::User);
+                        }
+                        cx.notify();
+                    }))))
+            }
+        };
+        card(border, bg).child(title).child(body).into_any_element()
+    }
+}
+
+/// Folders and files the cleanup suggests removing: a copy there is never the one kept.
+pub(super) fn finding_dirs(core: &Core) -> Vec<PathBuf> {
+    core.findings.iter().filter(|f| f.safety != Safety::Keep).map(|f| f.path.clone()).collect()
 }
 
 #[cfg(test)]

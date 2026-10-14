@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
+pub mod snapshots;
+pub mod treemap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Dir,
@@ -53,7 +56,7 @@ impl Live {
     /// The sizes counted so far as a small tree (folders only, largest first).
     pub fn snapshot(&self, name: &str) -> Node {
         let mut children: Vec<Node> = self.children.lock().unwrap().iter().map(|c| c.snapshot(&c.name)).filter(|n| n.size > 0).collect();
-        children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+        children.sort_unstable_by_key(|c| Reverse(c.size));
         let own = self.bytes.load(Relaxed);
         let size = if own > 0 { own } else { children.iter().map(|c| c.size).sum() };
         Node { name: name.into(), size, kind: Kind::Dir, children: children.into() }
@@ -108,7 +111,7 @@ fn scan_dir(path: &Path, name: String, ctx: &Ctx, depth: u8, live: &Arc<Live>, c
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    node.children.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    node.children.sort_unstable_by_key(|c| Reverse(c.size));
     node.size = node.children.iter().map(|c| c.size).sum();
     // One atomic add per folder (not per file) keeps the live map cheap.
     let own: u64 = node.children.iter().filter(|c| c.kind != Kind::Dir).map(|c| c.size).sum();
@@ -295,7 +298,7 @@ impl Node {
             self.children[i].remove(rest)?
         };
         self.size = self.size.saturating_sub(removed);
-        self.children.sort_by(|a, b| b.size.cmp(&a.size));
+        self.children.sort_by_key(|c| Reverse(c.size));
         Some(removed)
     }
 
@@ -310,7 +313,7 @@ impl Node {
             self.children[i].replace(rest, new)?;
         }
         self.size = self.size - old + self.children[i].size;
-        self.children.sort_by(|a, b| b.size.cmp(&a.size));
+        self.children.sort_by_key(|c| Reverse(c.size));
         Some(())
     }
 }
@@ -331,7 +334,7 @@ pub fn largest_files(node: &Node, prefix: &Path, limit: usize) -> Vec<(PathBuf, 
     let mut heap = BinaryHeap::new();
     walk(node, prefix, limit, &mut heap);
     let mut out: Vec<_> = heap.into_iter().map(|Reverse((s, p))| (p, s)).collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|c| Reverse(c.1));
     out
 }
 
@@ -351,7 +354,7 @@ mod tests {
 
     fn dir(name: &str, children: Vec<Node>) -> Node {
         let mut children = children;
-        children.sort_by(|a, b| b.size.cmp(&a.size));
+        children.sort_by_key(|c| Reverse(c.size));
         Node { name: name.into(), size: children.iter().map(|c| c.size).sum(), kind: Kind::Dir, children: children.into() }
     }
 
@@ -385,7 +388,8 @@ mod tests {
         let p = Progress::default();
         let tree = scan(t.path(), &p).unwrap();
         let live = p.live.snapshot("root");
-        let shape = |n: &Node| -> Vec<(String, u64, Vec<(String, u64)>)> {
+        type Shape = Vec<(String, u64, Vec<(String, u64)>)>;
+        let shape = |n: &Node| -> Shape {
             n.children
                 .iter()
                 .filter(|c| c.kind == Kind::Dir)
