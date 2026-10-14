@@ -15,17 +15,26 @@ Grab an installer from the [latest release](https://github.com/Benny93/fast-scan
 
 | Platform | Packages |
 |---|---|
-| macOS | `.dmg` for Apple Silicon and for Intel |
+| macOS | `.dmg` for Apple Silicon and for Intel, or via Homebrew |
 | Windows | `.exe` (NSIS installer) |
 | Linux | `.deb` and `.AppImage` (built on old glibc, so they run on most distros) |
 
 Installers are currently unsigned: Windows SmartScreen shows an "unknown publisher" prompt (click **More info → Run anyway**), and macOS Gatekeeper blocks the app on first launch — see below.
 
+### Homebrew (macOS)
+
+```bash
+brew tap benny93/tap
+brew install --cask benny93/tap/fastscancleaner
+```
+
+Later, `brew upgrade --cask benny93/tap/fastscancleaner` picks up new releases. The cask lives in [Benny93/homebrew-tap](https://github.com/Benny93/homebrew-tap) and is bumped automatically after every release. Use the fully-qualified name above: that trusts only this cask instead of the whole tap.
+
 ### First launch on macOS
 
-The `.dmg` is unsigned and not notarized, so Gatekeeper refuses it. On macOS 15 (Sequoia) and later this is the hard-block wording — e.g. *„"FastScanCleaner" ist beschädigt und kann nicht geöffnet werden"* / "…is damaged and can't be opened". Right-click → Open does **not** bypass it. The app itself is fine; the prompt comes only from the download `quarantine` flag.
+The `.dmg` is unsigned and not notarized, so Gatekeeper refuses it. On macOS 15 (Sequoia) and later this is the hard-block wording — e.g. *„"FastScanCleaner" ist beschädigt und kann nicht geöffnet werden"* / "…is damaged and can't be opened". Right-click → Open does **not** bypass it. The app itself is fine; the prompt comes only from the download `quarantine` flag — which Homebrew also sets, so this applies to brew installs too.
 
-After dragging **FastScanCleaner** into your Applications folder, clear the flag once:
+After installing **FastScanCleaner** into your Applications folder (by dragging it, or with brew), clear the flag once:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/FastScanCleaner.app"
