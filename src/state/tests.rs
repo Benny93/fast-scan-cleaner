@@ -531,7 +531,9 @@ async fn cancel_discards_the_running_scan_result() {
 }
 
 use crate::finders::cleaners::CmdOutput;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::AtomicUsize;
 
 /// brew: 1 MiB to free (0 after a run); docker/xcrun/git not installed; tmutil: no snapshots.
 pub(crate) fn default_runner() -> Runner {
@@ -568,6 +570,7 @@ async fn opening_cleanup_checks_system_tools() {
     f.app.show(Screen::Cleanup);
     settled(&f.app).await;
     let c = f.app.core.lock().unwrap();
+    #[cfg(unix)] // homebrew is not offered on Windows
     assert_eq!(c.system["homebrew"].status, SystemStatus::Ready { estimate: Estimate::Bytes(1_048_576), detail: vec![] });
     assert_eq!(c.system["docker"].status, SystemStatus::Unavailable { reason: "not_installed".into() });
     assert!(matches!(c.system["empty_trash"].status, SystemStatus::Ready { estimate: Estimate::Bytes(n), .. } if n >= 1000));
@@ -591,9 +594,11 @@ async fn opening_free_up_checks_system_tools() {
     settled(&f.app).await;
     let c = f.app.core.lock().unwrap();
     assert_eq!(c.screen, Screen::FreeUp);
+    #[cfg(unix)] // homebrew is not offered on Windows
     assert_eq!(c.system["homebrew"].status, SystemStatus::Ready { estimate: Estimate::Bytes(1_048_576), detail: vec![] });
 }
 
+#[cfg(unix)] // drives the homebrew cleaner, which is not offered on Windows
 #[tokio::test]
 async fn accepted_cleanup_runs_rechecks_and_toasts() {
     let f = fixture().await;
@@ -613,6 +618,7 @@ async fn accepted_cleanup_runs_rechecks_and_toasts() {
     assert_eq!(c.system_toasts, vec![(Cleaner::Homebrew, None, Some(1_048_576))]);
 }
 
+#[cfg(unix)] // drives the homebrew cleaner, which is not offered on Windows
 #[tokio::test]
 async fn declined_cleanup_never_runs() {
     let runs = Arc::new(AtomicUsize::new(0));
@@ -667,6 +673,7 @@ async fn agent_input_is_refused_at_the_delete_gate_and_in_settings() {
     assert!(f.app.input_allowed().is_err());
 }
 
+#[cfg(unix)] // drives the homebrew cleaner, which is not offered on Windows
 #[tokio::test]
 async fn decline_only_hits_its_own_request() {
     let f = fixture().await;
@@ -682,6 +689,7 @@ async fn decline_only_hits_its_own_request() {
     assert!(f.app.core.lock().unwrap().pending.is_none());
 }
 
+#[cfg(unix)] // drives the homebrew cleaner, which is not offered on Windows
 #[tokio::test]
 async fn recheck_during_run_keeps_running() {
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -707,6 +715,7 @@ async fn recheck_during_run_keeps_running() {
     assert!(matches!(rx.await.unwrap(), SystemOutcome::Done { .. }));
 }
 
+#[cfg(unix)] // only used by the homebrew run/recheck tests
 async fn settled_checks(app: &Arc<Shared>) {
     for _ in 0..200 {
         if !app.core.lock().unwrap().system.values().any(|i| matches!(i.status, SystemStatus::Checking)) {
@@ -717,6 +726,7 @@ async fn settled_checks(app: &Arc<Shared>) {
     panic!("checks did not settle");
 }
 
+#[cfg(unix)] // drives the homebrew cleaner, which is not offered on Windows
 #[tokio::test]
 async fn failed_run_reports_error() {
     let inner = default_runner();

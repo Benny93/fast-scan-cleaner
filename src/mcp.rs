@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(tree["children"][0]["children"][0]["name"], "a.bin");
 
         let top = body(&t.top_items(Parameters(TopArgs { path: None, limit: Some(1) })).unwrap());
-        assert_eq!(top[0]["path"], f.base.join("cache/a.bin").to_string_lossy().as_ref());
+        assert_eq!(top[0]["path"], f.base.join("cache").join("a.bin").to_string_lossy().as_ref());
 
         let findings = body(&t.get_findings().unwrap());
         assert_eq!(findings[0]["rule_id"], "node_modules");
@@ -796,6 +796,7 @@ mod tests {
         assert!(f.app.inputs.is_empty(), "nothing reaches the window");
     }
 
+    #[cfg(unix)] // homebrew is not offered on Windows
     #[tokio::test]
     async fn system_cleanups_list_and_confirmed_run() {
         let f = fixture().await;
