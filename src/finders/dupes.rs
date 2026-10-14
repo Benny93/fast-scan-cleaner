@@ -71,7 +71,8 @@ type File = (PathBuf, u64, u64); // path, size, modified
 // ponytail: 64-bit DefaultHasher, no crypto dependency; a false match needs equal size, equal
 // first 64 KiB and a 2^-64 collision, and the copy still only goes to the Trash.
 pub fn find(cands: Vec<(PathBuf, u64)>, p: &DupeProgress) -> Option<Vec<Group>> {
-    let mut seen = HashSet::new();
+    // Annotated: the only insert is under cfg(unix), so Windows cannot infer the element type.
+    let mut seen: HashSet<(u64, u64)> = HashSet::new();
     let files: Vec<File> = cands
         .into_iter()
         // The tree holds space on disk (whole blocks); group by the real length from here on.
