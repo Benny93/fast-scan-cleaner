@@ -15,7 +15,7 @@ jobs:
           - { os: macos-latest, formats: dmg } # Apple Silicon
           - { os: macos-13, formats: dmg } # Intel
           - { os: windows-latest, formats: nsis }
-          - { os: ubuntu-22.04, formats: "deb,appimage" } # older glibc = runs on more distros
+          - { os: ubuntu-24.04, formats: "deb,appimage" } # jammy's pipewire 0.3.59 headers do not compile xcap's libspa 0.10
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
