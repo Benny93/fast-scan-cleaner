@@ -44,6 +44,9 @@ tower = { version = "0.5", features = ["util"] }
 [package.metadata.packager]
 product-name = "FastScanCleaner"
 identifier = "dev.fastscancleaner.app"
+# Explicit publisher; otherwise cargo-packager defaults to the 2nd identifier
+# segment ("fastscancleaner"), which mismatches the winget manifest Publisher.
+publisher = "Benny93"
 category = "Utility"
 before-packaging-command = "cargo build --release --locked"
 out-dir = "target/dist"
