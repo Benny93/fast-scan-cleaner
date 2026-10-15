@@ -4,6 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/Benny93/fast-scan-cleaner)](https://github.com/Benny93/fast-scan-cleaner/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux-blue)](#)
+[![Pages](https://img.shields.io/badge/Pages-landing%20site-blue)](https://benny93.github.io/fast-scan-cleaner/)
 
 https://github.com/user-attachments/assets/b6c77ce3-8dd0-4354-8598-4af6f2667343
 
