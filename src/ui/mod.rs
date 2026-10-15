@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 mod a11y;
+mod about_view;
 mod agent;
 mod apps_card;
 mod models_card;
@@ -35,7 +36,7 @@ mod tree;
 mod welcome;
 mod wizard;
 
-actions!(fastscancleaner, [Refresh, Back, Forward, TrashMarked, ClearMarked, ShowHome, ShowMap, ShowCleanup, ShowFreeUp, ShowSettings]);
+actions!(fastscancleaner, [Refresh, Back, Forward, TrashMarked, ClearMarked, ShowHome, ShowMap, ShowCleanup, ShowFreeUp, ShowSettings, ShowAbout]);
 
 pub fn apply_language(setting: Option<&str>) {
     rust_i18n::set_locale(format::pick_locale(setting, sys_locale::get_locale()));
@@ -122,6 +123,8 @@ pub fn run(app: Arc<Shared>, rx: async_channel::Receiver<()>) {
             KeyBinding::new("ctrl-4", ShowFreeUp, None),
             KeyBinding::new("cmd-5", ShowSettings, None),
             KeyBinding::new("ctrl-5", ShowSettings, None),
+            KeyBinding::new("cmd-6", ShowAbout, None),
+            KeyBinding::new("ctrl-6", ShowAbout, None),
             KeyBinding::new("ctrl-r", Refresh, None),
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("ctrl-[", Back, None),
@@ -547,7 +550,8 @@ impl AppView {
                     .child(self.nav_item(core, "nav_map", Lucide::Map, Screen::DiskMap, has_scan, cx))
                     .child(self.nav_item(core, "nav_cleanup", Lucide::Sparkles, Screen::Cleanup, true, cx))
                     .child(self.nav_item(core, "nav_free_up", Lucide::Gauge, Screen::FreeUp, true, cx))
-                    .child(self.nav_item(core, "nav_settings", Lucide::Settings, Screen::Settings, true, cx)),
+                    .child(self.nav_item(core, "nav_settings", Lucide::Settings, Screen::Settings, true, cx))
+                    .child(self.nav_item(core, "nav_about", Lucide::Info, Screen::About, true, cx)),
             )
     }
 
@@ -655,6 +659,7 @@ impl Render for AppView {
             Screen::Cleanup => self.cleanup(&core, cx),
             Screen::FreeUp => self.free_up(&core, window, cx),
             Screen::Settings => self.settings_view(&core, window, cx),
+            Screen::About => self.about_view(&core, window, cx),
         };
         let notices = self.notices(&core);
         let (bg, fg) = {
@@ -671,6 +676,7 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &ShowCleanup, _, cx| this.show_view(Screen::Cleanup, cx)))
             .on_action(cx.listener(|this, _: &ShowFreeUp, _, cx| this.show_view(Screen::FreeUp, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, _, cx| this.show_view(Screen::Settings, cx)))
+            .on_action(cx.listener(|this, _: &ShowAbout, _, cx| this.show_view(Screen::About, cx)))
             .on_action(cx.listener(|this, _: &Refresh, _, cx| {
                 drop(this.app.refresh(None));
                 cx.notify();

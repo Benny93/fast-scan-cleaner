@@ -51,6 +51,7 @@ pub enum Screen {
     Cleanup,
     FreeUp,
     Settings,
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
