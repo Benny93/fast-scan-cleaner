@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastScanCleaner — see what fills your disk, clean it up safely</title>
+<meta name="description" content="Free, open-source disk cleaner for macOS, Windows and Linux. Interactive disk map, plain-language safety advice, trash-first removals and AI assistant support over MCP.">
+<meta property="og:title" content="FastScanCleaner">
+<meta property="og:description" content="See what fills your disk and clean it up safely.">
+<meta property="og:image" content="icon.svg">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<style>
+  :root {
+    --bg: #0b1220;
+    --bg-soft: #101a2e;
+    --card: #131f36;
+    --border: #24334f;
+    --fg: #e7edf7;
+    --muted: #93a3bc;
+    --primary: #3b82f6;
+    --primary-hover: #60a5fa;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --code-bg: #0d1526;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  a { color: var(--primary-hover); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11, 18, 32, .85);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav { display: flex; align-items: center; gap: 20px; height: 60px; }
+  nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--fg); }
+  nav .brand img { width: 26px; height: 26px; }
+  nav .links { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
+  nav .links a { color: var(--muted); }
+  nav .links a:hover { color: var(--fg); text-decoration: none; }
+
+  .hero { padding: 72px 0 40px; text-align: center; }
+  .hero h1 { font-size: clamp(32px, 5vw, 52px); margin: 0 0 12px; line-height: 1.15; }
+  .hero .tagline { font-size: clamp(17px, 2.2vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 28px; }
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 26px; border-radius: 10px;
+    font-weight: 600; font-size: 16px; border: 1px solid transparent;
+  }
+  .btn:hover { text-decoration: none; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-ghost { border-color: var(--border); color: var(--fg); }
+  .btn-ghost:hover { border-color: var(--primary); }
+  .platforms { margin-top: 18px; color: var(--muted); font-size: 14px; }
+  .badges { margin-top: 10px; }
+  .badges img { vertical-align: middle; }
+
+  .demo { margin: 40px auto 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+  .demo video { display: block; width: 100%; }
+
+  section { padding: 56px 0; }
+  section h2 { font-size: 30px; margin: 0 0 8px; }
+  section .lede { color: var(--muted); margin: 0 0 32px; max-width: 680px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .card .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+
+  .install-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; margin: 10px 0 0;
+  }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .note { font-size: 14px; color: var(--muted); margin-top: 18px; }
+
+  footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <nav class="wrap">
+    <a class="brand" href="#"><img src="icon.svg" alt=""> FastScanCleaner</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#mcp">AI&nbsp;assistant</a>
+      <a href="https://github.com/Benny93/fast-scan-cleaner">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<div class="hero wrap">
+  <h1>See what fills your disk.<br>Clean it up safely.</h1>
+  <p class="tagline">Inspired by GrandPerspective, built for people who don't want to be computer experts.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/Benny93/fast-scan-cleaner/releases/latest">Download</a>
+    <a class="btn btn-ghost" href="https://github.com/Benny93/fast-scan-cleaner">View on GitHub</a>
+  </div>
+  <p class="platforms">macOS&nbsp;·&nbsp;Windows&nbsp;·&nbsp;Linux &nbsp;—&nbsp; .dmg, .exe, .deb, .AppImage</p>
+  <p class="badges">
+    <a href="https://github.com/Benny93/fast-scan-cleaner/actions/workflows/ci.yml"><img src="https://github.com/Benny93/fast-scan-cleaner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/Benny93/fast-scan-cleaner/releases/latest"><img src="https://img.shields.io/github/v/release/Benny93/fast-scan-cleaner" alt="Release"></a>
+    <a href="https://github.com/Benny93/fast-scan-cleaner/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
+  </p>
+  <div class="demo">
+    <video src="https://github.com/user-attachments/assets/b6c77ce3-8dd0-4354-8598-4af6f2667343" controls muted loop playsinline preload="metadata"></video>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>What you get</h2>
+    <p class="lede">Everything works out of the box — no terminal knowledge required.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>🗺️ Map of your disk</h3>
+        <p>A treemap where big blocks are big folders and files, filling in live while scanning. Click to zoom, browser-style back/forward, right-click to select several blocks and trash them in one go.</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--green)"></span>Plain-language advice</h3>
+        <p>Every block is colour-coded: <strong style="color:var(--green)">green</strong> = safe to remove, <strong style="color:var(--yellow)">yellow</strong> = check first, <strong style="color:var(--red)">red</strong> = keep. Comes with a curated rules catalog — Xcode caches, Docker data, iOS backups, <code>node_modules</code>, …</p>
+      </div>
+      <div class="card">
+        <h3>🗑️ Nothing is deleted</h3>
+        <p>Removals go to the Trash, so you can restore them. Only the optional system tools delete permanently — empty Trash, Homebrew and Docker cleanup, old simulators, stale Git worktrees — and they always ask first.</p>
+      </div>
+      <div class="card">
+        <h3>🤖 AI assistant support (MCP)</h3>
+        <p>Let Qoder, Claude or another assistant explore your disk with you, see what you see, and propose things to remove. It can never remove anything without your confirmation.</p>
+      </div>
+      <div class="card">
+        <h3>🌍 Comfortable defaults</h3>
+        <p>Six languages (English, Deutsch, Français, Español, 中文, 日本語), light/dark/system theme, and recent scans at a click.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="lede">Grab an installer from the <a href="https://github.com/Benny93/fast-scan-cleaner/releases/latest">latest release</a>, or use your package manager.</p>
+    <div class="install-grid">
+      <div class="card">
+        <h3>macOS — Homebrew</h3>
+        <pre><code>brew install --cask benny93/tap/fastscancleaner</code></pre>
+        <p class="note">The fully-qualified name trusts only this cask, not the whole tap.</p>
+      </div>
+      <div class="card">
+        <h3>Windows — winget</h3>
+        <pre><code>winget install Benny93.FastScanCleaner</code></pre>
+      </div>
+      <div class="card">
+        <h3>Linux</h3>
+        <pre><code># .deb and .AppImage in the latest release,
+# built on old glibc so they run on most distros.</code></pre>
+      </div>
+    </div>
+    <p class="note"><strong>First launch:</strong> installers are unsigned. On macOS, after installing run <code>xattr -dr com.apple.quarantine "/Applications/FastScanCleaner.app"</code> once. On Windows, SmartScreen shows "unknown publisher" — click <em>More info → Run anyway</em>. The app itself is fine.</p>
+  </div>
+</section>
+
+<section id="mcp">
+  <div class="wrap">
+    <h2>Connect an AI assistant</h2>
+    <p class="lede">Turn on <em>Allow AI assistants to control this app</em> in Settings, restart, then point your client at the local server:</p>
+    <pre><code>claude mcp add --transport http fastscancleaner http://127.0.0.1:7878/mcp</code></pre>
+    <p class="note">The server listens on <code>127.0.0.1</code> only (default port 7878) and rejects requests from other hosts. Every removal stays behind your confirmation in the app — there is deliberately no tool to change settings or the allowlist.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>FastScanCleaner — free and open source, licensed under the <a href="https://github.com/Benny93/fast-scan-cleaner/blob/main/LICENSE">MIT License</a>.</span>
+    <a href="https://github.com/Benny93/fast-scan-cleaner">GitHub</a>
+    <a href="https://github.com/Benny93/fast-scan-cleaner/releases">Releases</a>
+    <a href="https://github.com/Benny93/fast-scan-cleaner/issues">Issues</a>
+  </div>
+</footer>
+
+</body>
+</html>
