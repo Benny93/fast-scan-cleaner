@@ -188,6 +188,8 @@ pub struct AppView {
     welcome_mascot: Option<Entity<mascot::Mascot>>,
     /// One focus handle per pressable area (see `a11y::Pressable`), stable across renders.
     focus_handles: std::cell::RefCell<std::collections::HashMap<SharedString, FocusHandle>>,
+    /// One scroll handle per bounded dialog list, stable across renders (scroll position survives).
+    scroll_handles: std::cell::RefCell<std::collections::HashMap<SharedString, ScrollHandle>>,
     /// A confirmation that just opened takes keyboard focus once (then Tab reaches its buttons).
     dialog_focused: bool,
     /// Screen of the last render: a new screen moves keyboard focus back to its top.
@@ -443,6 +445,7 @@ impl AppView {
             guide,
             welcome_mascot: None,
             focus_handles: Default::default(),
+            scroll_handles: Default::default(),
             dialog_focused: false,
             focused_screen: None,
             hover_tip,

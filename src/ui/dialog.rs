@@ -11,9 +11,30 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis, ScrollbarMode};
 
 impl AppView {
+    /// The same scroll handle for the same list on every render, so its scroll position survives.
+    fn scroll_for(&self, key: &str) -> ScrollHandle {
+        self.scroll_handles.borrow_mut().entry(key.into()).or_insert_with(ScrollHandle::default).clone()
+    }
+
+    /// A list capped at `max` px that always shows a vertical scrollbar once it overflows.
+    ///
+    /// `overflow_y_scrollbar()` copies the max-height onto its outer wrapper, so inside an
+    /// auto-sized dialog the inner viewport never gets a definite height, the scroll handle sees
+    /// no overflow, and the thumb is never drawn. Here the same element is both the bounded
+    /// viewport and the scroll host, with an explicit `Always` scrollbar overlaid on top.
+    fn bounded_scroll(&self, key: &str, max: f32, list: impl FnOnce(Stateful<Div>) -> Stateful<Div>) -> AnyElement {
+        let handle = self.scroll_for(key);
+        let list = list(div().id(key.to_string()).v_flex().gap_1());
+        div()
+            .relative()
+            .child(list.max_h(px(max)).track_scroll(&handle).overflow_y_scroll())
+            .child(div().absolute().inset_0().child(Scrollbar::new(&handle).id(format!("{key}-bar")).axis(ScrollbarAxis::Vertical).mode(ScrollbarMode::Always).viewport_from_layout()))
+            .into_any_element()
+    }
+
     pub(super) fn confirm_dialog(&self, p: &Pending, cx: &mut Context<Self>) -> AnyElement {
         if !p.system.is_empty() {
             return self.system_confirm_dialog(p, cx);
@@ -49,8 +70,8 @@ impl AppView {
                     .child(div().h_flex().gap_2().child(Icon::new(Lucide::TriangleAlert).text_color(warning)).child(div().text_xl().font_weight(FontWeight::BOLD).child(t!("confirm_title").to_string())))
                     .when(p.origin == Origin::Agent, |d| d.child(div().h_flex().gap_2().child(Tag::info().child(div().h_flex().gap_1().child(Icon::new(Lucide::Bot).size_3()).child(t!("ai_assistant").to_string()))).child(div().flex_1().min_w_0().child(t!("confirm_agent").to_string()))))
                     .children(reason.map(|r| div().italic().child(t!("confirm_reason", reason = r).to_string())))
-                    .child(
-                        div().id("confirm-items").v_flex().max_h(px(280.)).overflow_y_scrollbar().gap_1().children(p.items.iter().map(|(path, size)| {
+                    .child(self.bounded_scroll("confirm-items", 280., |list| {
+                        list.children(p.items.iter().map(|(path, size)| {
                             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
                             let parent = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
                             let size = size.map(|s| format::size(s, &l)).unwrap_or_else(|| t!("confirm_size_unknown").to_string());
@@ -68,8 +89,8 @@ impl AppView {
                                         .child(div().font_weight(FontWeight::BOLD).child(name))
                                         .child(div().text_xs().text_color(muted).child(parent)),
                                 )
-                        })),
-                    )
+                        }))
+                    }))
                     .child(div().text_sm().text_color(muted).child(t!("confirm_restore").to_string()))
                     .child(
                         div()
@@ -137,16 +158,16 @@ impl AppView {
                     .when(git, |d| d.child(div().text_sm().child(t!("confirm_sys_git_note").to_string())))
                     .when(p.origin == Origin::Agent, |d| d.child(div().h_flex().gap_2().child(Tag::info().child(div().h_flex().gap_1().child(Icon::new(Lucide::Bot).size_3()).child(t!("ai_assistant").to_string()))).child(div().flex_1().min_w_0().child(t!("confirm_agent").to_string()))))
                     .children(reason.map(|r| div().italic().child(t!("confirm_reason", reason = r).to_string())))
-                    .child(
-                        div().id("confirm-sys-detail").v_flex().max_h(px(260.)).overflow_y_scrollbar().gap_1().children(p.system.iter().filter(|r| !r.detail.is_empty()).map(|r| {
+                    .child(self.bounded_scroll("confirm-sys-detail", 260., |list| {
+                        list.children(p.system.iter().filter(|r| !r.detail.is_empty()).map(|r| {
                             div()
                                 .v_flex()
                                 .gap_1()
                                 .pb_2()
                                 .when(many, |d| d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(system_name(r.cleaner, r.repo.as_deref()))))
                                 .children(r.detail.iter().map(|line| div().text_sm().child(line.clone())))
-                        })),
-                    )
+                        }))
+                    }))
                     .child(
                         div()
                             .h_flex()
