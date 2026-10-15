@@ -33,6 +33,7 @@ jobs:
       # macOS Gatekeeper blocks the app on first launch; the release body links the workaround.
       - uses: softprops/action-gh-release@v2
         with:
+          overwrite: true
           body: |
             ## First launch
 
