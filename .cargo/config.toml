@@ -1,0 +1,5 @@
+# winget's automated validator runs on a clean Windows image that has no VC++
+# redistributable; a dynamically linked CRT aborts launch with STATUS_DLL_NOT_FOUND
+# (0xC0000135). Static CRT keeps the installer self-contained.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

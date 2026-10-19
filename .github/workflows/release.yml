@@ -29,6 +29,21 @@ jobs:
             libxrandr-dev libfontconfig-dev libpipewire-0.3-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev clang libfuse2
       - run: cargo install cargo-packager --locked
       - run: cargo packager --release --formats ${{ matrix.formats }}
+      # Gate the release on the packaged exe being self-contained: a stray CRT DLL import
+      # installs fine but only fails later in winget's validator (0xC0000135).
+      - name: Verify no VC++ runtime import
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("$env:GITHUB_WORKSPACE\target\release\fastscancleaner.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($dll in @('VCRUNTIME140', 'VCRUNTIME140_1', 'MSVCP140')) {
+            if ($text.Contains($dll)) {
+              Write-Error "fastscancleaner.exe imports $dll.dll - the exe needs the VC++ redistributable"
+              exit 1
+            }
+          }
+          Write-Output "no CRT DLL imports"
       # Installers are intentionally unsigned (no Apple Developer / code-signing cert).
       # macOS Gatekeeper blocks the app on first launch; the release body links the workaround.
       - uses: softprops/action-gh-release@v2
