@@ -37,13 +37,13 @@ jobs:
         run: |
           $bytes = [System.IO.File]::ReadAllBytes("$env:GITHUB_WORKSPACE\target\release\fastscancleaner.exe")
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($dll in @('VCRUNTIME140', 'VCRUNTIME140_1', 'MSVCP140')) {
-            if ($text.Contains($dll)) {
+          foreach ($dll in @('VCRUNTIME140', 'MSVCP140', 'CONCRT140')) {
+            if ($text.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
               Write-Error "fastscancleaner.exe imports $dll.dll - the exe needs the VC++ redistributable"
               exit 1
             }
           }
-          Write-Output "no CRT DLL imports"
+          Write-Output "no VC++ runtime imports"
       # Installers are intentionally unsigned (no Apple Developer / code-signing cert).
       # macOS Gatekeeper blocks the app on first launch; the release body links the workaround.
       - uses: softprops/action-gh-release@v2
