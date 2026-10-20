@@ -2,6 +2,15 @@ name: Publish to WinGet
 on:
   release:
     types: [released]
+  # Release events never reach this workflow in practice: the release is created by
+  # GITHUB_TOKEN inside Release, and events caused by that token do not start new runs.
+  # Dispatch this with the tag whenever a release needs submitting.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to submit (e.g. v0.3.1)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,4 +29,5 @@ jobs:
           identifier: Benny93.FastScanCleaner
           installers-regex: '\.exe$' # only the Windows NSIS installer
           max-versions-to-keep: 5
+          release-tag: ${{ github.event.release.tag_name || inputs.tag }}
           token: ${{ secrets.WINGET_TOKEN }}
