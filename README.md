@@ -110,6 +110,16 @@ cargo packager --release
 
 Bump `version` in `Cargo.toml`, commit, then `make release` — it tags and pushes, and CI builds installers for all platforms into a GitHub Release.
 
+## WinGet
+
+The Windows installer is published as `Benny93.FastScanCleaner`. GitHub never starts **Publish to WinGet** from the release that CI creates, because events caused by `GITHUB_TOKEN` do not cascade into new runs, so dispatch it after the release is up:
+
+```bash
+gh workflow run winget.yml --ref main -f tag=v0.3.1
+```
+
+It requires a `microsoft/winget-pkgs` fork on this account and the `WINGET_TOKEN` secret. The action can only *update* a package that already exists in winget, so the very first version has to be submitted by hand.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

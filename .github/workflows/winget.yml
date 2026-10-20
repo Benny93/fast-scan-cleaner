@@ -23,7 +23,7 @@ jobs:
       # Auto-submits a manifest PR to microsoft/winget-pkgs for the NSIS .exe on every published release.
       # Requires: a fork of microsoft/winget-pkgs under the same account, and a classic PAT (public_repo +
       # workflow scopes) stored as the WINGET_TOKEN secret. Only kicks in once a first version is merged
-      # manually (the action uses an existing package as its base). See README "Publishing updates".
+      # manually (the action uses an existing package as its base). See README "WinGet".
       - uses: vedantmgoyal9/winget-releaser@main
         with:
           identifier: Benny93.FastScanCleaner
