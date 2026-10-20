@@ -25,6 +25,8 @@ impl AppView {
     /// auto-sized dialog the inner viewport never gets a definite height, the scroll handle sees
     /// no overflow, and the thumb is never drawn. Here the same element is both the bounded
     /// viewport and the scroll host, with an explicit `Always` scrollbar overlaid on top.
+    /// The bar reads the handle in prepaint, so it can only appear on the second frame; the
+    /// dialog schedules that frame when it opens (see `AppView::render`).
     fn bounded_scroll(&self, key: &str, max: f32, list: impl FnOnce(Stateful<Div>) -> Stateful<Div>) -> AnyElement {
         let handle = self.scroll_for(key);
         let list = list(div().id(key.to_string()).v_flex().gap_1());

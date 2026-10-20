@@ -192,6 +192,8 @@ pub struct AppView {
     scroll_handles: std::cell::RefCell<std::collections::HashMap<SharedString, ScrollHandle>>,
     /// A confirmation that just opened takes keyboard focus once (then Tab reaches its buttons).
     dialog_focused: bool,
+    /// A confirmation that just opened gets one more frame (see `render`).
+    dialog_shown: bool,
     /// Screen of the last render: a new screen moves keyboard focus back to its top.
     focused_screen: Option<Screen>,
     pub(crate) hover_tip: Entity<hover_tip::HoverTip>,
@@ -447,6 +449,7 @@ impl AppView {
             focus_handles: Default::default(),
             scroll_handles: Default::default(),
             dialog_focused: false,
+            dialog_shown: false,
             focused_screen: None,
             hover_tip,
             tree: tree::TreeState {
@@ -628,6 +631,19 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
         let core = app.core.lock().unwrap();
+        // The confirm dialog's lists read their ScrollHandle in prepaint, but the handle
+        // learns its bounds and content size while the first frame paints. Other screens
+        // hide that one-frame lag behind their transition animation, the dialog has none,
+        // so draw once more when it opens or its scrollbar would stay invisible until the
+        // next unrelated repaint.
+        match (core.pending.is_some(), self.dialog_shown) {
+            (true, false) => {
+                self.dialog_shown = true;
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+            }
+            (false, true) => self.dialog_shown = false,
+            _ => {}
+        }
         // A scan picked on the guide's last step ends the guide.
         if self.guide_step() == Some(welcome::Step::Places) && core.scanning.is_some() {
             self.guide = None;
