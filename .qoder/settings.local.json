@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find src -type f | head -100 && echo \"---\" && cat Cargo.toml)",
+      "Bash(ls /Users/benny/dev/fast-scan-cleaner/target/release 2>/dev/null | head; echo \"cargo: $\\(command -v cargo || echo missing\\)\"; echo \"rustc: $\\(command -v rustc || echo missing\\)\")",
+      "Bash(lsof -nP -iTCP:7878 -sTCP:LISTEN 2>/dev/null; echo \"port check done\")"
+    ]
+  }
+}
